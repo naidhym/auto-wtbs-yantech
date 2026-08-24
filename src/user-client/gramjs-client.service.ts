@@ -1,6 +1,7 @@
 import { Api, TelegramClient } from 'telegram';
 import type { UserAuthParams } from 'telegram/client/auth.js';
 import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
+import { LogLevel } from 'telegram/extensions/Logger.js';
 import { StringSession } from 'telegram/sessions/index.js';
 
 import type {
@@ -72,6 +73,8 @@ export interface GramJsClientOptions {
   readonly session?: string;
   readonly connectionRetries?: number;
   readonly reconnectRetries?: number;
+  /** Used only by read-only diagnostics so GramJS transport chatter does not pollute terminal output. */
+  readonly silent?: boolean;
 }
 
 export interface TelegramClientStatus {
@@ -103,6 +106,9 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
       requestRetries: 5,
     },
   );
+  if (options.silent === true) {
+    client.setLogLevel(LogLevel.NONE);
+  }
   let backgroundErrorHandler: (error: unknown) => Promise<void> = () => Promise.resolve();
   let listenerRegistrationCount = 0;
   const reportBackgroundError = async (error: unknown): Promise<void> => {

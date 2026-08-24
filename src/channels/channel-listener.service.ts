@@ -273,6 +273,27 @@ export class ChannelListenerService {
     return this.active.has(assignmentId);
   }
 
+  /** Read-only process-memory snapshot for diagnostics; it never changes subscriptions. */
+  public getDiagnosticSnapshot(): Array<{
+    readonly assignmentId: number;
+    readonly accountId: number;
+    readonly accountKey: string;
+    readonly channelId: number;
+    readonly expectedTelegramChannelId: string;
+    readonly nativeClientInstanceId: string;
+    readonly state: 'active';
+  }> {
+    return [...this.active.values()].map(({ assignment, channel }) => ({
+      assignmentId: assignment.id,
+      accountId: assignment.accountId,
+      accountKey: assignment.accountKey,
+      channelId: channel.id,
+      expectedTelegramChannelId: channel.telegramChannelId,
+      nativeClientInstanceId: this.nativeClientInstanceId(assignment.accountKey),
+      state: 'active',
+    }));
+  }
+
   private async handleListenerError(
     assignment: ChannelAssignmentRecord,
     channel: ChannelRecord,

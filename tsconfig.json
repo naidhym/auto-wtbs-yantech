@@ -23,6 +23,6 @@
     "declarationMap": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
   "exclude": ["node_modules", "dist", "data", "logs"]
 }
