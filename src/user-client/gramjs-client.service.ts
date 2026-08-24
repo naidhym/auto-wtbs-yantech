@@ -1,4 +1,4 @@
-import { Api, TelegramClient } from 'telegram';
+import { Api, TelegramClient, utils } from 'telegram';
 import type { UserAuthParams } from 'telegram/client/auth.js';
 import { NewMessage, NewMessageEvent, Raw } from 'telegram/events/index.js';
 import { LogLevel } from 'telegram/extensions/Logger.js';
@@ -266,6 +266,25 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
       );
       const builder = createChannelMessageBuilder(entity.id.toString());
       await builder.resolve(client);
+      let channelRecoveryInFlight: Promise<void> | undefined;
+      const channelRecoveryBuilder = new Raw({ types: [Api.UpdateChannelTooLong] });
+      const channelRecoveryHandler = (update: unknown): void => {
+        if (
+          !(update instanceof Api.UpdateChannelTooLong) ||
+          update.channelId.toString() !== entity.id.toString() ||
+          channelRecoveryInFlight !== undefined
+        ) {
+          return;
+        }
+
+        channelRecoveryInFlight = recoverChannelUpdateState(client, entity, update)
+          .then(() => undefined)
+          .catch(reportBackgroundError)
+          .finally(() => {
+            channelRecoveryInFlight = undefined;
+          });
+      };
+      client.addEventHandler(channelRecoveryHandler, channelRecoveryBuilder);
       const handler = (event: NewMessageEvent): void => {
         void (async () => {
           const correlationId = `upd-${nextDiagnosticCorrelationId++}`;
@@ -343,6 +362,7 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
       );
       return (): Promise<void> => {
         client.removeEventHandler(handler, builder);
+        client.removeEventHandler(channelRecoveryHandler, channelRecoveryBuilder);
         listenerRegistrationCount -= 1;
         diagnostic(
           'diagnostic_listener_registration',
@@ -683,6 +703,32 @@ export function createChannelMessageBuilder(telegramChannelId: string): NewMessa
     throw new Error('Telegram channel ID must be numeric');
   }
   return new NewMessage({ chats: [telegramChannelId] });
+}
+
+/**
+ * A numeric `NewMessage.chats` filter is local-only. When Telegram reports a
+ * channel gap, acknowledge its latest pts with the channel's access-hash-backed
+ * InputChannel so future live updates resume without replaying missed posts.
+ */
+export async function recoverChannelUpdateState(
+  client: Pick<TelegramClient, 'invoke'>,
+  entity: Api.Channel,
+  update: unknown,
+): Promise<boolean> {
+  if (
+    !(update instanceof Api.UpdateChannelTooLong) ||
+    update.channelId.toString() !== entity.id.toString()
+  ) {
+    return false;
+  }
+
+  await client.invoke(new Api.updates.GetChannelDifference({
+    channel: utils.getInputChannel(entity),
+    filter: new Api.ChannelMessagesFilterEmpty(),
+    pts: update.pts ?? 0,
+    limit: 1,
+  }));
+  return true;
 }
 
 function permissionNames(rights: unknown): readonly string[] | undefined {

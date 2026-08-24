@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Api, type TelegramClient } from 'telegram';
 import bigInt from 'big-integer';
 import type { UserAuthParams } from 'telegram/client/auth.js';
@@ -18,6 +18,7 @@ import {
   GramJsClientService,
   mapGramJsEvent,
   reactToSentComment,
+  recoverChannelUpdateState,
   resolveBroadcastChannel,
   type TelegramClientAdapter,
 } from '../src/user-client/gramjs-client.service.js';
@@ -210,6 +211,39 @@ describe('GramJS client lifecycle foundation', () => {
     expect(second.filter(firstEvent)).toBeUndefined();
     expect(first.filter(secondEvent)).toBeUndefined();
     expect(second.filter(secondEvent)).toBeDefined();
+  });
+
+  it('recovers a broadcast channel gap with its access-hash-backed InputChannel', async () => {
+    const entity = new Api.Channel({
+      id: bigInt('333333333'),
+      accessHash: bigInt('987654321'),
+      title: 'Gap Recovery Test',
+      photo: new Api.ChatPhotoEmpty(),
+      date: 0,
+      broadcast: true,
+    });
+    const invoke = vi.fn().mockResolvedValue(new Api.updates.ChannelDifferenceEmpty({ pts: 48 }));
+
+    await recoverChannelUpdateState(
+      { invoke } as Pick<TelegramClient, 'invoke'>,
+      entity,
+      new Api.UpdateChannelTooLong({ channelId: entity.id, pts: 47 }),
+    );
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    const [request] = invoke.mock.calls[0] as [Api.updates.GetChannelDifference];
+    expect(request).toBeInstanceOf(Api.updates.GetChannelDifference);
+    expect(request.channel).toBeInstanceOf(Api.InputChannel);
+    expect((request.channel as Api.InputChannel).channelId.toString()).toBe('333333333');
+    expect((request.channel as Api.InputChannel).accessHash?.toString()).toBe('987654321');
+    expect(request.pts).toBe(47);
+
+    await expect(recoverChannelUpdateState(
+      { invoke } as Pick<TelegramClient, 'invoke'>,
+      entity,
+      new Api.UpdateChannelTooLong({ channelId: bigInt('444444444'), pts: 48 }),
+    )).resolves.toBe(false);
+    expect(invoke).toHaveBeenCalledTimes(1);
   });
 
   it('hydrates a private numeric channel from dialogs and rejects megagroups', async () => {
