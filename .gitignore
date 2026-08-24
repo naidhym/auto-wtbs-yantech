@@ -1,0 +1,29 @@
+node_modules/
+dist/
+coverage/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Every account keeps isolated local session storage; sessions are never reused across clients.
+data/
+*.session
+*.session.tmp
+*.session-journal
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+
+# Runtime output
+logs/
+*.log
+*.pid
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

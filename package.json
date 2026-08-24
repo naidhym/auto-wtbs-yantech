@@ -1,0 +1,36 @@
+{
+  "name": "auto-wtb-bot",
+  "version": "0.2.1",
+  "private": true,
+  "description": "Standalone Telegram channel monitoring and rule-based WTB automation service.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run build"
+  },
+  "dependencies": {
+    "dotenv": "17.4.2",
+    "pino": "10.3.1",
+    "telegraf": "4.16.3",
+    "telegram": "2.26.22",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "22.20.1",
+    "eslint": "10.8.1",
+    "pm2": "7.0.3",
+    "tsx": "4.23.12",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.67.0",
+    "vitest": "4.1.10"
+  }
+}
