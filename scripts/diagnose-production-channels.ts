@@ -5,10 +5,14 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import pino from 'pino';
+import type { TelegramClient } from 'telegram';
 
 import { loadConfig } from '../src/config/config.js';
 import { errorReason } from '../src/logging/logger.js';
-import { GramJsClientService } from '../src/user-client/gramjs-client.service.js';
+import {
+  createChannelMessageBuilder,
+  GramJsClientService,
+} from '../src/user-client/gramjs-client.service.js';
 
 type SqlRow = Record<string, unknown>;
 
@@ -51,12 +55,27 @@ interface EntityProbe {
   readonly state: 'MATCH' | 'MISMATCH' | 'ERROR' | 'NOT_ATTEMPTED';
   readonly entityType?: string;
   readonly resolvedTelegramChannelId?: string;
+  readonly resolvedLeft?: boolean;
+  readonly resolvedBroadcast?: boolean;
+  readonly resolvedMegagroup?: boolean;
+  readonly resolvedRestricted?: boolean;
+  readonly resolvedCreator?: boolean;
+  readonly resolvedAdminRights?: readonly string[];
+  readonly resolvedDefaultBannedRights?: readonly string[];
+  readonly visibility?: 'public_username' | 'private_or_no_username';
+  readonly builderType?: string;
+  readonly builderChats?: readonly string[];
+  readonly builderEntityId?: string;
+  readonly builderInput?: 'numeric_channel_id' | 'entity_object' | 'unavailable';
+  readonly expectedUpdateType?: string;
   readonly error?: string;
   readonly runtimeConnected: boolean;
 }
 
 interface EventCounts {
-  rawUpdates: number;
+  nativeUpdates: number;
+  handlerInvocations: number;
+  nativeObserverRegistered: number;
   guardAccepted: number;
   guardRejected: number;
   mapperSuccess: number;
@@ -72,15 +91,28 @@ interface EventCounts {
 interface AssignmentDiagnostic {
   readonly assignment: AssignmentInfo;
   readonly entity: EntityProbe;
+  readonly registration: ListenerRegistration | undefined;
   readonly counts: EventCounts;
   readonly listenerState: string;
   readonly firstFailingBoundary: string;
+}
+
+interface ListenerRegistration {
+  readonly status: string;
+  readonly registrationIndex?: number;
+  readonly handlerRegistrationCount?: number;
+  readonly builderType?: string;
+  readonly builderChats?: readonly string[];
+  readonly builderEntityId?: string;
+  readonly builderInput?: string;
 }
 
 const diagnosticActions = new Set([
   'diagnostic_channel_assignment_loaded',
   'diagnostic_telegram_entity_resolution',
   'diagnostic_listener_registration',
+  'diagnostic_native_update_observer_registration',
+  'diagnostic_native_telegram_update',
   'diagnostic_raw_telegram_update',
   'diagnostic_scoped_channel_guard',
   'diagnostic_mapper',
@@ -126,6 +158,7 @@ async function main(): Promise<void> {
       return {
         assignment,
         entity,
+        registration: findLatestRegistration(assignment, logEvents),
         counts,
         listenerState,
         firstFailingBoundary: determineFirstFailingBoundary(entity, counts, listenerState),
@@ -133,6 +166,7 @@ async function main(): Promise<void> {
     });
 
     printProbeDetails(diagnostics);
+    printStructuralComparison(diagnostics);
     printLogSources(logPaths, logEvents.length, databaseEvents.length);
     printSummary(diagnostics);
     printBoundarySummary(diagnostics);
@@ -278,12 +312,24 @@ async function probeEntities(
         const identifier = channel.username ?? channel.telegramChannelId;
         const resolved = await service.resolveChannel(identifier);
         const matches = resolved.telegramChannelId === channel.telegramChannelId;
+        const builder = await inspectBuilder(resolved.telegramChannelId);
         probes.set(key, {
           accountKey,
           assignmentId: assignment.id,
           state: matches ? 'MATCH' : 'MISMATCH',
           entityType: 'Api.Channel (broadcast required by current listener)',
           resolvedTelegramChannelId: resolved.telegramChannelId,
+          ...(resolved.left === undefined ? {} : { resolvedLeft: resolved.left }),
+          ...(resolved.broadcast === undefined ? {} : { resolvedBroadcast: resolved.broadcast }),
+          ...(resolved.megagroup === undefined ? {} : { resolvedMegagroup: resolved.megagroup }),
+          ...(resolved.restricted === undefined ? {} : { resolvedRestricted: resolved.restricted }),
+          ...(resolved.creator === undefined ? {} : { resolvedCreator: resolved.creator }),
+          ...(resolved.adminRights === undefined ? {} : { resolvedAdminRights: resolved.adminRights }),
+          ...(resolved.defaultBannedRights === undefined
+            ? {}
+            : { resolvedDefaultBannedRights: resolved.defaultBannedRights }),
+          visibility: resolved.username === undefined ? 'private_or_no_username' : 'public_username',
+          ...builder,
           runtimeConnected,
         });
       } catch (error) {
@@ -300,6 +346,24 @@ async function probeEntities(
     await Promise.allSettled([...services.values()].map(async (service) => service.disconnect()));
   }
   return probes;
+}
+
+async function inspectBuilder(telegramChannelId: string): Promise<{
+  readonly builderType: string;
+  readonly builderChats: readonly string[];
+  readonly builderEntityId: string;
+  readonly builderInput: 'numeric_channel_id';
+  readonly expectedUpdateType: string;
+}> {
+  const builder = createChannelMessageBuilder(telegramChannelId);
+  await builder.resolve({} as TelegramClient);
+  return {
+    builderType: builder.constructor.name,
+    builderChats: builder.chats ?? [],
+    builderEntityId: telegramChannelId,
+    builderInput: 'numeric_channel_id',
+    expectedUpdateType: 'Api.UpdateNewChannelMessage',
+  };
 }
 
 function readStoredSession(sessionDirectory: string, accountKey: string): string | undefined {
@@ -401,7 +465,9 @@ function countEvents(
   databaseEvents: readonly SqlRow[],
 ): EventCounts {
   const counts: EventCounts = {
-    rawUpdates: 0,
+    nativeUpdates: 0,
+    handlerInvocations: 0,
+    nativeObserverRegistered: 0,
     guardAccepted: 0,
     guardRejected: 0,
     mapperSuccess: 0,
@@ -415,19 +481,33 @@ function countEvents(
   };
 
   for (const event of logEvents) {
-    if (!matchesAssignment(event, assignment)) continue;
     const action = text(event.action);
     const status = text(event.status);
-    if (action === 'diagnostic_raw_telegram_update') counts.rawUpdates += 1;
+    const eventAccountKey = text(event.account);
+    if (
+      action === 'diagnostic_native_update_observer_registration' &&
+      eventAccountKey === assignment.account?.key
+    ) {
+      counts.nativeObserverRegistered += 1;
+    }
+    if (
+      action === 'diagnostic_native_telegram_update' &&
+      eventAccountKey === assignment.account?.key &&
+      text(event.actualTelegramChannelId) === assignment.channel?.telegramChannelId
+    ) {
+      counts.nativeUpdates += 1;
+    }
+    if (!matchesAssignment(event, assignment)) continue;
+    if (action === 'diagnostic_raw_telegram_update') counts.handlerInvocations += 1;
     if (action === 'diagnostic_scoped_channel_guard') {
-      if (status === 'accepted') counts.guardAccepted += 1;
+      if (status === 'passed' || event.accepted === true) counts.guardAccepted += 1;
       else counts.guardRejected += 1;
     }
     if (action === 'diagnostic_mapper') {
-      if (status === 'success') counts.mapperSuccess += 1;
+      if (status === 'mapped') counts.mapperSuccess += 1;
       else counts.mapperFailed += 1;
     }
-    if (action === 'diagnostic_global_detection' && status === 'matched') counts.detection += 1;
+    if (action === 'diagnostic_global_detection' && status === 'detected') counts.detection += 1;
     if (action === 'diagnostic_dispatch' && status === 'selected') counts.dispatch += 1;
     if (action === 'channel_listener_start' && status === 'started') counts.listenerStarted += 1;
     if (action === 'diagnostic_listener_registration' && status === 'registered') {
@@ -451,6 +531,31 @@ function countEvents(
     if (eventType === 'reply_failed' || eventType === 'reaction_failed') counts.errors += 1;
   }
   return counts;
+}
+
+function findLatestRegistration(
+  assignment: AssignmentInfo,
+  logEvents: readonly SqlRow[],
+): ListenerRegistration | undefined {
+  const event = [...logEvents].reverse().find((candidate) =>
+    matchesAssignment(candidate, assignment) &&
+    text(candidate.action) === 'diagnostic_listener_registration',
+  );
+  if (event === undefined) return undefined;
+  const registrationIndex = integer(event.registrationIndex);
+  const handlerRegistrationCount = integer(event.handlerRegistrationCount);
+  const builderType = text(event.eventBuilderType);
+  const builderChats = stringArray(event.eventBuilderChats);
+  const builderEntityId = text(event.resolvedTelegramChannelId);
+  return {
+    status: text(event.status) ?? 'unknown',
+    ...(registrationIndex === undefined ? {} : { registrationIndex }),
+    ...(handlerRegistrationCount === undefined ? {} : { handlerRegistrationCount }),
+    ...(builderType === undefined ? {} : { builderType }),
+    ...(builderChats === undefined ? {} : { builderChats }),
+    ...(builderEntityId === undefined ? {} : { builderEntityId }),
+    ...(builderType === undefined ? {} : { builderInput: 'numeric_channel_id' }),
+  };
 }
 
 function matchesAssignment(event: SqlRow, assignment: AssignmentInfo): boolean {
@@ -483,8 +588,12 @@ function determineFirstFailingBoundary(
   if (listenerState === 'REGISTRATION_FAILED_IN_LOGS' || listenerState === 'LISTENER_ERROR_IN_LOGS') {
     return 'LISTENER_REGISTRATION';
   }
-  if (counts.rawUpdates === 0) {
-    return listenerState === 'STARTED_IN_LOGS' ? 'RAW_UPDATE (no observed update)' : 'NO_RUNTIME_EVIDENCE';
+  if (counts.handlerInvocations === 0) {
+    if (counts.nativeObserverRegistered === 0) {
+      return 'NATIVE_UPDATE_UNOBSERVED (observer not in inspected logs)';
+    }
+    if (counts.nativeUpdates === 0) return 'TELEGRAM_UPDATE_DELIVERY';
+    return 'NEW_MESSAGE_FILTER';
   }
   if (counts.guardAccepted === 0 && counts.guardRejected > 0) return 'SCOPED_GUARD';
   if (counts.mapperFailed > 0 && counts.mapperSuccess === 0) return 'MAPPER';
@@ -576,11 +685,75 @@ function printProbeDetails(diagnostics: readonly AssignmentDiagnostic[]): void {
       `EXPECTED_TELEGRAM_CHANNEL_ID=${value(assignment.channel?.telegramChannelId)}`,
       `RESOLVED_ENTITY_TYPE=${value(entity.entityType)}`,
       `RESOLVED_TELEGRAM_CHANNEL_ID=${value(entity.resolvedTelegramChannelId)}`,
+      `ENTITY_LEFT=${entity.resolvedLeft === undefined ? '-' : yesNo(entity.resolvedLeft)}`,
+      `BROADCAST=${entity.resolvedBroadcast === undefined ? '-' : yesNo(entity.resolvedBroadcast)}`,
+      `MEGAGROUP=${entity.resolvedMegagroup === undefined ? '-' : yesNo(entity.resolvedMegagroup)}`,
+      `RESTRICTED=${entity.resolvedRestricted === undefined ? '-' : yesNo(entity.resolvedRestricted)}`,
+      `CREATOR=${entity.resolvedCreator === undefined ? '-' : yesNo(entity.resolvedCreator)}`,
+      `ADMIN_RIGHTS=${valueList(entity.resolvedAdminRights)}`,
+      `DEFAULT_BANNED_RIGHTS=${valueList(entity.resolvedDefaultBannedRights)}`,
+      `VISIBILITY=${value(entity.visibility)}`,
+      `BUILDER_TYPE=${value(entity.builderType)}`,
+      `BUILDER_INPUT=${value(entity.builderInput)}`,
+      `BUILDER_ENTITY_ID=${value(entity.builderEntityId)}`,
+      `BUILDER_CHATS=${valueList(entity.builderChats)}`,
+      `EXPECTED_UPDATE=${value(entity.expectedUpdateType)}`,
+      `REGISTRATION_STATUS=${value(diagnostic.registration?.status)}`,
+      `REGISTRATION_INDEX=${value(diagnostic.registration?.registrationIndex)}`,
+      `HANDLER_COUNT=${value(diagnostic.registration?.handlerRegistrationCount)}`,
+      `REGISTERED_BUILDER_TYPE=${value(diagnostic.registration?.builderType)}`,
+      `REGISTERED_BUILDER_INPUT=${value(diagnostic.registration?.builderInput)}`,
+      `REGISTERED_BUILDER_ENTITY_ID=${value(diagnostic.registration?.builderEntityId)}`,
+      `REGISTERED_BUILDER_CHATS=${valueList(diagnostic.registration?.builderChats)}`,
       `MATCH=${entity.state}`,
       `CONNECTED=${yesNo(entity.runtimeConnected)}`,
       ...(entity.error === undefined ? [] : [`RESOLUTION_ERROR=${entity.error}`]),
     ].join(' | '));
   }
+}
+
+function printStructuralComparison(diagnostics: readonly AssignmentDiagnostic[]): void {
+  section('STRUCTURAL COMPARISON: tes VS OTHER ACTIVE CHANNELS');
+  const references = diagnostics.filter((item) => item.assignment.channel?.title.trim().toLowerCase() === 'tes');
+  if (references.length === 0) {
+    line('Working channel "tes" was not found among active assignments.');
+    return;
+  }
+  for (const reference of references) {
+    line(`\nACCOUNT ${reference.assignment.account?.label ?? value(reference.assignment.accountId)} | tes assignment=${value(reference.assignment.id)}`);
+    const comparisons = diagnostics
+      .filter((candidate) => candidate.assignment.accountId === reference.assignment.accountId)
+      .filter((candidate) => candidate.assignment.id !== reference.assignment.id)
+      .map((candidate) => [
+        candidate.assignment.channel?.title ?? value(candidate.assignment.channelId),
+        structuralDifferences(reference.entity, candidate.entity) || 'NO_STRUCTURAL_DIFFERENCE',
+      ]);
+    if (comparisons.length === 0) line('  No other active assignments for this account.');
+    else printTable(['Channel', 'Difference from tes'], comparisons);
+  }
+}
+
+function structuralDifferences(reference: EntityProbe, candidate: EntityProbe): string {
+  const fields: Array<readonly [string, string]> = [
+    ['entityType', `${value(reference.entityType)} -> ${value(candidate.entityType)}`],
+    ['broadcast', `${booleanValue(reference.resolvedBroadcast)} -> ${booleanValue(candidate.resolvedBroadcast)}`],
+    ['megagroup', `${booleanValue(reference.resolvedMegagroup)} -> ${booleanValue(candidate.resolvedMegagroup)}`],
+    ['left', `${booleanValue(reference.resolvedLeft)} -> ${booleanValue(candidate.resolvedLeft)}`],
+    ['restricted', `${booleanValue(reference.resolvedRestricted)} -> ${booleanValue(candidate.resolvedRestricted)}`],
+    ['creator', `${booleanValue(reference.resolvedCreator)} -> ${booleanValue(candidate.resolvedCreator)}`],
+    ['visibility', `${value(reference.visibility)} -> ${value(candidate.visibility)}`],
+    ['builderType', `${value(reference.builderType)} -> ${value(candidate.builderType)}`],
+    ['builderInput', `${value(reference.builderInput)} -> ${value(candidate.builderInput)}`],
+    ['builderChats', `${valueList(reference.builderChats)} -> ${valueList(candidate.builderChats)}`],
+    ['expectedUpdateType', `${value(reference.expectedUpdateType)} -> ${value(candidate.expectedUpdateType)}`],
+  ];
+  return fields
+    .filter(([, comparison]) => {
+      const [left, right] = comparison.split(' -> ');
+      return left !== right;
+    })
+    .map(([field, comparison]) => `${field}: ${comparison}`)
+    .join('; ');
 }
 
 function printLogSources(logPaths: readonly string[], logEventCount: number, databaseEventCount: number): void {
@@ -594,7 +767,7 @@ function printLogSources(logPaths: readonly string[], logEventCount: number, dat
 function printSummary(diagnostics: readonly AssignmentDiagnostic[]): void {
   section('WORKING VS BROKEN SUMMARY (ONE ROW PER ACTIVE ASSIGNMENT)');
   const headers = [
-    'Channel', 'Account', 'Entity Match', 'Listener', 'Raw Updates', 'Guard Accepted',
+    'Channel', 'Account', 'Entity Match', 'Listener', 'Native Updates', 'Handler Invoked', 'Guard Accepted',
     'Guard Rejected', 'Mapper', 'Detection', 'Dispatch', 'Errors', 'First Boundary',
   ];
   const rows = diagnostics.map((diagnostic) => [
@@ -602,7 +775,8 @@ function printSummary(diagnostics: readonly AssignmentDiagnostic[]): void {
     diagnostic.assignment.account?.label ?? `account-${value(diagnostic.assignment.accountId)}`,
     diagnostic.entity.state,
     diagnostic.listenerState,
-    String(diagnostic.counts.rawUpdates),
+    String(diagnostic.counts.nativeUpdates),
+    String(diagnostic.counts.handlerInvocations),
     String(diagnostic.counts.guardAccepted),
     String(diagnostic.counts.guardRejected),
     `${diagnostic.counts.mapperSuccess}/${diagnostic.counts.mapperFailed}`,
@@ -624,7 +798,7 @@ function printBoundarySummary(diagnostics: readonly AssignmentDiagnostic[]): voi
       `boundary=${diagnostic.firstFailingBoundary}`,
     ].join(' | '));
   }
-  line('A boundary is evidence classification, not a root-cause claim. RAW_UPDATE means no relevant raw update was observed in the logs inspected.');
+  line('A boundary is evidence classification, not a root-cause claim. Native delivery and NewMessage filtering are now measured separately.');
 }
 
 function printTable(headers: readonly string[], rows: readonly (readonly string[])[]): void {
@@ -692,6 +866,19 @@ function isSqlRow(value: unknown): value is SqlRow {
 
 function value(input: string | number | undefined): string {
   return input === undefined ? '-' : String(input);
+}
+
+function valueList(input: readonly string[] | undefined): string {
+  return input === undefined || input.length === 0 ? '-' : input.join(',');
+}
+
+function booleanValue(input: boolean | undefined): string {
+  return input === undefined ? '-' : yesNo(input);
+}
+
+function stringArray(input: unknown): readonly string[] | undefined {
+  if (!Array.isArray(input) || !input.every((value) => typeof value === 'string')) return undefined;
+  return input;
 }
 
 function yesNo(input: boolean): string {

@@ -36,6 +36,14 @@ export interface ResolvedTelegramChannel {
   readonly telegramChannelId: string;
   readonly username?: string;
   readonly title: string;
+  readonly left?: boolean;
+  readonly broadcast?: boolean;
+  readonly megagroup?: boolean;
+  readonly restricted?: boolean;
+  readonly creator?: boolean;
+  readonly entityType?: string;
+  readonly adminRights?: readonly string[];
+  readonly defaultBannedRights?: readonly string[];
 }
 
 export interface TelegramChannelSubscriptionContext {

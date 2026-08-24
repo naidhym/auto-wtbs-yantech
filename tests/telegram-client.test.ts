@@ -163,6 +163,55 @@ describe('GramJS client lifecycle foundation', () => {
     });
   });
 
+  it('keeps multiple numeric broadcast-channel builders independent on one client', async () => {
+    const first = createChannelMessageBuilder('111111111');
+    const second = createChannelMessageBuilder('222222222');
+    await Promise.all([
+      first.resolve({} as TelegramClient),
+      second.resolve({} as TelegramClient),
+    ]);
+
+    expect(first).not.toBe(second);
+    expect(first.chats).toContain('-100111111111');
+    expect(second.chats).toContain('-100222222222');
+
+    const firstMessage = new Api.Message({
+      out: false,
+      mentioned: false,
+      mediaUnread: false,
+      silent: false,
+      post: true,
+      id: 1,
+      peerId: new Api.PeerChannel({ channelId: bigInt('111111111') }),
+      message: '',
+      date: 0,
+    });
+    const secondMessage = new Api.Message({
+      out: false,
+      mentioned: false,
+      mediaUnread: false,
+      silent: false,
+      post: true,
+      id: 2,
+      peerId: new Api.PeerChannel({ channelId: bigInt('222222222') }),
+      message: '',
+      date: 0,
+    });
+    const firstEvent = new NewMessageEvent(
+      firstMessage,
+      new Api.UpdateNewChannelMessage({ message: firstMessage, pts: 1, ptsCount: 1 }),
+    );
+    const secondEvent = new NewMessageEvent(
+      secondMessage,
+      new Api.UpdateNewChannelMessage({ message: secondMessage, pts: 2, ptsCount: 1 }),
+    );
+
+    expect(first.filter(firstEvent)).toBeDefined();
+    expect(second.filter(firstEvent)).toBeUndefined();
+    expect(first.filter(secondEvent)).toBeUndefined();
+    expect(second.filter(secondEvent)).toBeDefined();
+  });
+
   it('hydrates a private numeric channel from dialogs and rejects megagroups', async () => {
     const privateChannel = new Api.Channel({
       id: bigInt('555000111'),
@@ -170,6 +219,7 @@ describe('GramJS client lifecycle foundation', () => {
       photo: new Api.ChatPhotoEmpty(),
       date: 0,
       broadcast: true,
+      left: true,
     });
     const hydratedClient = {
       getEntity: () => Promise.reject(new Error('entity cache miss')),

@@ -1,6 +1,6 @@
 import { Api, TelegramClient } from 'telegram';
 import type { UserAuthParams } from 'telegram/client/auth.js';
-import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
+import { NewMessage, NewMessageEvent, Raw } from 'telegram/events/index.js';
 import { LogLevel } from 'telegram/extensions/Logger.js';
 import { StringSession } from 'telegram/sessions/index.js';
 
@@ -121,6 +121,38 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
     }
   };
   client.onError = reportBackgroundError;
+  const nativeUpdateObserver = (update: unknown): void => {
+    if (!(update instanceof Api.UpdateNewChannelMessage) || !(update.message instanceof Api.Message)) {
+      return;
+    }
+    const peer = update.message.peerId;
+    logger?.info(
+      {
+        account: options.accountKey,
+        action: 'diagnostic_native_telegram_update',
+        status: 'received',
+        nativeClientInstanceId,
+        updateType: update.constructor.name,
+        rawPeerType: peer?.constructor.name,
+        ...(peer instanceof Api.PeerChannel ? { actualTelegramChannelId: peer.channelId.toString() } : {}),
+        sourceMessageId: update.message.id,
+        post: update.message.post === true,
+      },
+      'Native Telegram channel update observed before NewMessage filtering',
+    );
+  };
+  client.addEventHandler(nativeUpdateObserver, new Raw({ types: [Api.UpdateNewChannelMessage] }));
+  logger?.info(
+    {
+      account: options.accountKey,
+      action: 'diagnostic_native_update_observer_registration',
+      status: 'registered',
+      nativeClientInstanceId,
+      eventBuilderType: 'Raw',
+      eventBuilderFilter: 'Api.UpdateNewChannelMessage',
+    },
+    'Native Telegram update observer registered before NewMessage filtering',
+  );
 
   return {
     get connected(): boolean | undefined {
@@ -150,10 +182,20 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
     },
     async resolveChannel(identifier): Promise<ResolvedTelegramChannel> {
       const entity = await resolveBroadcastChannel(client, identifier);
+      const adminRights = permissionNames(entity.adminRights);
+      const defaultBannedRights = permissionNames(entity.defaultBannedRights);
       return {
         telegramChannelId: entity.id.toString(),
         ...(entity.username === undefined ? {} : { username: entity.username }),
         title: entity.title,
+        left: entity.left === true,
+        broadcast: entity.broadcast === true,
+        megagroup: entity.megagroup === true,
+        restricted: entity.restricted === true,
+        creator: entity.creator === true,
+        entityType: entity.constructor.name,
+        ...(adminRights === undefined ? {} : { adminRights }),
+        ...(defaultBannedRights === undefined ? {} : { defaultBannedRights }),
       };
     },
     async subscribeChannel(
@@ -215,6 +257,11 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
           expectedMatchesActual: entity.id.toString() === context.expectedTelegramChannelId,
           resolvedBroadcast: entity.broadcast === true,
           resolvedMegagroup: entity.megagroup === true,
+          resolvedLeft: entity.left === true,
+          resolvedRestricted: entity.restricted === true,
+          resolvedCreator: entity.creator === true,
+          resolvedAdminRights: permissionNames(entity.adminRights),
+          resolvedDefaultBannedRights: permissionNames(entity.defaultBannedRights),
         },
       );
       const builder = createChannelMessageBuilder(entity.id.toString());
@@ -287,7 +334,11 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
         {
           resolvedTelegramChannelId: entity.id.toString(),
           telegramChannelId: context.expectedTelegramChannelId,
-          handlerRegistrationCount: listenerRegistrationCount,
+          eventBuilderType: builder.constructor.name,
+          eventBuilderChats: builder.chats,
+          eventBuilderResolved: builder.resolved,
+          registrationIndex: listenerRegistrationCount + 1,
+          handlerRegistrationCount: listenerRegistrationCount + 1,
         },
       );
       return (): Promise<void> => {
@@ -632,6 +683,15 @@ export function createChannelMessageBuilder(telegramChannelId: string): NewMessa
     throw new Error('Telegram channel ID must be numeric');
   }
   return new NewMessage({ chats: [telegramChannelId] });
+}
+
+function permissionNames(rights: unknown): readonly string[] | undefined {
+  if (typeof rights !== 'object' || rights === null) return undefined;
+  const names = Object.entries(rights)
+    .filter(([, value]) => value === true)
+    .map(([name]) => name)
+    .sort();
+  return names;
 }
 
 export function evaluateHeartReactionCapability(
