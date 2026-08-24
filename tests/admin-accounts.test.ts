@@ -762,6 +762,17 @@ describe('Admin Bot button-first M2 UX', () => {
     const notification = lastPayload(harness.callApi, 'sendMessage');
     expect(notification?.text).toContain('CHANNEL AUTOMATION BLOCKED');
     expect(notification?.text).toContain('jgn reply');
+    await harness.service.notifyActionReport({
+      type: 'reply_sent',
+      accountNickname: 'Shark',
+      channelTitle: 'WTB Bandung',
+      trigger: 'bucin',
+      sourceMessageLink: 'https://t.me/example/92',
+    });
+    const actionReport = lastPayload(harness.callApi, 'sendMessage');
+    expect(actionReport?.text).toContain('AUTO WTB REPORT');
+    expect(actionReport?.text).toContain('Reply Sent');
+    expect(actionReport?.text).toContain('WTB Bandung');
     await harness.close();
   });
 });

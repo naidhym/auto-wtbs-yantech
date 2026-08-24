@@ -4,11 +4,11 @@ import { AccountAutomationSettingsService } from './automation/account-automatio
 import { AutomationDispatchRepository } from './automation/automation-dispatch.repository.js';
 import { AutomationSafetyService } from './automation/automation-safety.service.js';
 import { AutoReplyService } from './automation/auto-reply.service.js';
-import type { OwnerNotificationGateway } from './automation/automation.types.js';
-import {
-  GramJsAccountNotificationGateway,
-  GramJsAutoReplyGateway,
-} from './automation/gramjs-auto-reply.gateway.js';
+import type {
+  AccountNotificationGateway,
+  OwnerNotificationGateway,
+} from './automation/automation.types.js';
+import { GramJsAutoReplyGateway } from './automation/gramjs-auto-reply.gateway.js';
 import { AccountManagerService } from './accounts/account-manager.service.js';
 import { AccountRepository } from './accounts/account.repository.js';
 import { AccountService } from './accounts/account.service.js';
@@ -71,6 +71,7 @@ export class AutoWtbApplication {
   private globalKeywords?: GlobalKeywordService;
   private automationSettings?: AccountAutomationSettingsService;
   private automationSafety?: AutomationSafetyService;
+  private eventLogs?: EventLogRepository;
   private autoReply?: AutoReplyService;
   private keepAliveTimer: NodeJS.Timeout | undefined;
   private shutdownPromise?: Promise<void>;
@@ -139,6 +140,7 @@ export class AutoWtbApplication {
         const channelRepository = new ChannelRepository(this.database.getConnection());
         const channelGateway = new GramJsChannelGateway(accountService, this.telegramClients);
         const eventLogs = new EventLogRepository(this.database.getConnection());
+        this.eventLogs = eventLogs;
         const templateRepository = new ReplyTemplateRepository(this.database.getConnection());
         this.replyTemplateService = new ReplyTemplateService(
           templateRepository,
@@ -199,6 +201,10 @@ export class AutoWtbApplication {
         const safetyNotifications: OwnerNotificationGateway = {
           notify: (notification) => this.adminBot?.notifyOwner(notification) ?? Promise.resolve(false),
         };
+        const actionNotifications: AccountNotificationGateway = {
+          notify: (_accountKey, notification) =>
+            this.adminBot?.notifyActionReport(notification) ?? Promise.resolve(false),
+        };
         const autoReply = new AutoReplyService(
           detectionPipeline,
           this.automationSafety,
@@ -208,11 +214,7 @@ export class AutoWtbApplication {
           this.automationSettings,
           new AutomationDispatchRepository(this.database.getConnection()),
           new GramJsAutoReplyGateway(accountService, this.telegramClients),
-          new GramJsAccountNotificationGateway(
-            accountService,
-            this.telegramClients,
-            this.automationSettings,
-          ),
+          actionNotifications,
           safetyNotifications,
           eventLogs,
           this.config.adminBot.ownerTelegramId,
@@ -264,6 +266,7 @@ export class AutoWtbApplication {
           ...(this.automationSafety === undefined
             ? {}
             : { automationSafetyController: this.automationSafety }),
+          ...(this.eventLogs === undefined ? {} : { actionReportProvider: this.eventLogs }),
         });
         await this.adminBot.start();
       }

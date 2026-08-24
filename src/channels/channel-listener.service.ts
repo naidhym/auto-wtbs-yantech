@@ -39,6 +39,34 @@ export class ChannelListenerService {
   }
 
   public async startAll(ownerTelegramId: string): Promise<ListenerStartSummary> {
+    for (const { assignment, channel, accountEnabled, accountStatus } of this.repository.listListenerAssignmentAudit(ownerTelegramId)) {
+      const eligible = assignment.enabled && channel.enabled && !channel.automationBlocked && accountEnabled;
+      this.logger.info(
+        {
+          account: assignment.accountKey,
+          channel: channel.id,
+          action: 'diagnostic_channel_assignment_loaded',
+          status: eligible ? 'eligible' : 'ineligible',
+          reason: eligible ? 'all_listener_eligibility_gates_passed' : listenerIneligibilityReason(assignment, channel, accountEnabled),
+          assignmentId: assignment.id,
+          accountId: assignment.accountId,
+          accountSessionKey: assignment.accountKey,
+          channelId: channel.id,
+          telegramChannelId: channel.telegramChannelId,
+          username: channel.username,
+          channelTitle: channel.title,
+          nativeClientInstanceId: this.nativeClientInstanceId(assignment.accountKey),
+          assignmentStatus: assignment.status,
+          assignmentEnabled: assignment.enabled,
+          channelStatus: channel.status,
+          channelEnabled: channel.enabled,
+          automationBlocked: channel.automationBlocked === true,
+          accountEnabled,
+          accountStatus,
+        },
+        'Diagnostic channel assignment loaded',
+      );
+    }
     const eligible = this.repository.listEffectiveAssignments(ownerTelegramId);
     const results = await Promise.allSettled(
       eligible.map(async ({ assignment, channel }) => this.start(assignment, channel)),
@@ -70,11 +98,28 @@ export class ChannelListenerService {
       !assignment.enabled ||
       !channel.enabled ||
       channel.automationBlocked === true
-    ) return;
+    ) {
+      this.logger.info(
+        {
+          account: assignment.accountKey,
+          channel: channel.id,
+          action: 'diagnostic_listener_registration',
+          status: 'skipped',
+          reason: listenerIneligibilityReason(assignment, channel, true, this.acceptingMessages, this.active.has(assignment.id)),
+          channelDatabaseId: channel.id,
+          expectedTelegramChannelId: channel.telegramChannelId,
+          nativeClientInstanceId: this.nativeClientInstanceId(assignment.accountKey),
+          assignmentId: assignment.id,
+        },
+        'Diagnostic listener registration skipped',
+      );
+      return;
+    }
 
     try {
       const unsubscribe = await this.gateway.subscribe(
         assignment.accountKey,
+        assignment,
         channel,
         async (message) => {
           if (!this.acceptingMessages) return;
@@ -89,6 +134,13 @@ export class ChannelListenerService {
                   action: 'channel_message_processing_error',
                   status: 'failed',
                   errorReason: errorReason(error),
+                  assignmentId: assignment.id,
+                  accountId: assignment.accountId,
+                  channelId: channel.id,
+                  telegramChannelId: channel.telegramChannelId,
+                  ...(message.sourceMessageId === undefined ? {} : { sourceMessageId: message.sourceMessageId }),
+                  errorName: error instanceof Error ? error.name : 'UnknownError',
+                  errorMessage: errorReason(error),
                 },
                 'Channel message processing failed without stopping its listener',
               );
@@ -100,10 +152,34 @@ export class ChannelListenerService {
       this.active.set(assignment.id, { assignment, channel, unsubscribe });
       this.repository.setAssignmentStatus(assignment.id, 'active');
       this.logger.info(
-        { account: assignment.accountKey, channel: channel.id, action: 'channel_listener_start', status: 'started' },
+        {
+          account: assignment.accountKey,
+          channel: channel.id,
+          action: 'channel_listener_start',
+          status: 'started',
+          channelDatabaseId: channel.id,
+          expectedTelegramChannelId: channel.telegramChannelId,
+          nativeClientInstanceId: this.nativeClientInstanceId(assignment.accountKey),
+          assignmentId: assignment.id,
+        },
         'Channel listener started',
       );
     } catch (error) {
+      this.logger.warn(
+        {
+          account: assignment.accountKey,
+          channel: channel.id,
+          action: 'diagnostic_listener_registration',
+          status: 'failed',
+          assignmentId: assignment.id,
+          accountId: assignment.accountId,
+          channelId: channel.id,
+          telegramChannelId: channel.telegramChannelId,
+          errorName: error instanceof Error ? error.name : 'UnknownError',
+          errorMessage: errorReason(error),
+        },
+        'Diagnostic listener registration failed',
+      );
       await this.handleListenerError(assignment, channel, error);
       throw error;
     }
@@ -236,4 +312,24 @@ export class ChannelListenerService {
       this.inFlight.delete(task);
     });
   }
+
+  private nativeClientInstanceId(accountKey: string): string {
+    return this.gateway.getNativeClientInstanceId?.(accountKey) ?? 'unavailable';
+  }
+}
+
+function listenerIneligibilityReason(
+  assignment: ChannelAssignmentRecord,
+  channel: ChannelRecord,
+  accountEnabled: boolean,
+  acceptingMessages = true,
+  alreadyActive = false,
+): string {
+  if (!acceptingMessages) return 'listener_service_not_accepting_messages';
+  if (alreadyActive) return 'assignment_listener_already_active';
+  if (!assignment.enabled) return 'assignment_disabled';
+  if (!channel.enabled) return 'channel_disabled';
+  if (channel.automationBlocked === true) return 'channel_automation_blocked';
+  if (!accountEnabled) return 'account_disabled';
+  return 'unknown_listener_ineligibility';
 }

@@ -38,10 +38,22 @@ export interface ResolvedTelegramChannel {
   readonly title: string;
 }
 
+export interface TelegramChannelSubscriptionContext {
+  readonly assignmentId: number;
+  readonly accountId: number;
+  readonly accountSessionKey: string;
+  readonly channelId: number;
+  readonly expectedTelegramChannelId: string;
+  readonly usernameUsedForResolution?: string;
+}
+
 export interface ChannelAccessGateway {
   resolve(accountKey: string, identifier: string): Promise<ResolvedTelegramChannel>;
+  /** Stable only for the lifetime of the running process; used for listener diagnostics. */
+  getNativeClientInstanceId?(accountKey: string): string | undefined;
   subscribe(
     accountKey: string,
+    assignment: ChannelAssignmentRecord,
     channel: ChannelRecord,
     onMessage: (event: TelegramIncomingMessage) => Promise<void>,
     onError: (error: unknown) => Promise<void> | void,

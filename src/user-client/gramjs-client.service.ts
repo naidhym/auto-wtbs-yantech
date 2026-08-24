@@ -3,7 +3,10 @@ import type { UserAuthParams } from 'telegram/client/auth.js';
 import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 import { StringSession } from 'telegram/sessions/index.js';
 
-import type { ResolvedTelegramChannel } from '../channels/channel.types.js';
+import type {
+  ResolvedTelegramChannel,
+  TelegramChannelSubscriptionContext,
+} from '../channels/channel.types.js';
 import type { TelegramIncomingMessage, TelegramSenderDisplayName } from '../rules/rule.types.js';
 import { errorReason, type AppLogger } from '../logging/logger.js';
 
@@ -46,7 +49,7 @@ export interface TelegramClientAdapter {
   resolveChannel(identifier: string): Promise<ResolvedTelegramChannel>;
   subscribeChannel(
     identifier: string,
-    databaseChannelId: string,
+    context: TelegramChannelSubscriptionContext,
     onMessage: (event: TelegramIncomingMessage) => Promise<void>,
     onError: (error: unknown) => Promise<void> | void,
   ): Promise<() => Promise<void>>;
@@ -81,9 +84,13 @@ export interface TelegramClientStatus {
 
 export type TelegramClientFactory = (
   options: GramJsClientOptions,
+  logger?: AppLogger,
+  nativeClientInstanceId?: string,
 ) => TelegramClientAdapter;
 
-const defaultClientFactory: TelegramClientFactory = (options) => {
+let nextDiagnosticCorrelationId = 1;
+
+const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClientInstanceId = 'unavailable') => {
   const session = new StringSession(options.session ?? '');
   const client = new TelegramClient(
     session,
@@ -97,6 +104,7 @@ const defaultClientFactory: TelegramClientFactory = (options) => {
     },
   );
   let backgroundErrorHandler: (error: unknown) => Promise<void> = () => Promise.resolve();
+  let listenerRegistrationCount = 0;
   const reportBackgroundError = async (error: unknown): Promise<void> => {
     try {
       await backgroundErrorHandler(error);
@@ -144,19 +152,116 @@ const defaultClientFactory: TelegramClientFactory = (options) => {
     },
     async subscribeChannel(
       identifier,
-      _databaseChannelId,
+      context,
       onMessage,
       onError,
     ): Promise<() => Promise<void>> {
-      const entity = await resolveBroadcastChannel(client, identifier);
+      let entity: Api.Channel;
+      try {
+        entity = await resolveBroadcastChannel(client, identifier);
+      } catch (error) {
+        logger?.warn(
+          diagnosticFields(context, nativeClientInstanceId, {
+            action: 'diagnostic_telegram_entity_resolution',
+            status: 'failed',
+            errorName: error instanceof Error ? error.name : 'UnknownError',
+            errorMessage: errorReason(error),
+          }),
+          'Telegram entity resolution diagnostic failed',
+        );
+        throw error;
+      }
+      const diagnostic = (
+        action: string,
+        status: string,
+        reason: string,
+        actualTelegramChannelId?: string,
+        sourceMessageId?: number,
+        extra: Record<string, unknown> = {},
+      ): void => {
+        logger?.info(
+          {
+            account: context.accountSessionKey,
+            channel: context.channelId,
+            action,
+            status,
+            reason,
+            ...diagnosticFields(context, nativeClientInstanceId),
+            ...(actualTelegramChannelId === undefined ? {} : { actualTelegramChannelId }),
+            nativeClientInstanceId,
+            ...(sourceMessageId === undefined ? {} : { sourceMessageId }),
+            ...extra,
+          },
+          'Telegram listener diagnostic',
+        );
+      };
+      diagnostic(
+        'diagnostic_telegram_entity_resolution',
+        entity.id.toString() === context.expectedTelegramChannelId ? 'success' : 'mismatch',
+        entity.id.toString() === context.expectedTelegramChannelId
+          ? 'broadcast_channel_resolved'
+          : 'resolved_entity_id_differs_from_expected_channel_id',
+        entity.id.toString(),
+        undefined,
+        {
+          usernameUsedForResolution: context.usernameUsedForResolution,
+          resolvedEntityType: entity.constructor.name,
+          expectedMatchesActual: entity.id.toString() === context.expectedTelegramChannelId,
+          resolvedBroadcast: entity.broadcast === true,
+          resolvedMegagroup: entity.megagroup === true,
+        },
+      );
       const builder = createChannelMessageBuilder(entity.id.toString());
       await builder.resolve(client);
       const handler = (event: NewMessageEvent): void => {
         void (async () => {
+          const correlationId = `upd-${nextDiagnosticCorrelationId++}`;
+          const actualTelegramChannelId = telegramChannelIdFromEvent(event);
+          const sourceMessageId = event.message.id;
+          diagnostic(
+            'diagnostic_raw_telegram_update',
+            'received',
+            'native_new_message_handler_invoked',
+            actualTelegramChannelId,
+            sourceMessageId,
+            rawUpdateMetadata(event, entity, correlationId),
+          );
           try {
             const mappedMessage = await mapGramJsEvent(event, entity);
-            await onMessage(mappedMessage);
+            const scoped = mappedMessage.chatKind === 'channel_post' &&
+              mappedMessage.telegramChannelId === context.expectedTelegramChannelId;
+            diagnostic(
+              'diagnostic_scoped_channel_guard',
+              scoped ? 'passed' : 'ignored',
+              scoped
+                ? 'accepted'
+                : scopedChannelReason(mappedMessage, context.expectedTelegramChannelId),
+              mappedMessage.telegramChannelId ?? actualTelegramChannelId,
+              mappedMessage.sourceMessageId,
+              { correlationId, accepted: scoped },
+            );
+            diagnostic(
+              'diagnostic_mapper',
+              'mapped',
+              `chat_kind:${mappedMessage.chatKind}`,
+              mappedMessage.telegramChannelId ?? actualTelegramChannelId,
+              mappedMessage.sourceMessageId,
+              { correlationId, telegramChannelId: mappedMessage.telegramChannelId },
+            );
+            await onMessage({ ...mappedMessage, correlationId });
           } catch (error) {
+            diagnostic(
+              'diagnostic_mapper',
+              'failed',
+              errorReason(error),
+              actualTelegramChannelId,
+              sourceMessageId,
+              {
+                correlationId,
+                errorName: error instanceof Error ? error.name : 'UnknownError',
+                errorMessage: errorReason(error),
+              },
+            );
             try {
               await onError(error);
             } catch (boundaryError) {
@@ -166,8 +271,30 @@ const defaultClientFactory: TelegramClientFactory = (options) => {
         })();
       };
       client.addEventHandler(handler, builder);
+      listenerRegistrationCount += 1;
+      diagnostic(
+        'diagnostic_listener_registration',
+        'registered',
+        'native_gramjs_handler_registered',
+        entity.id.toString(),
+        undefined,
+        {
+          resolvedTelegramChannelId: entity.id.toString(),
+          telegramChannelId: context.expectedTelegramChannelId,
+          handlerRegistrationCount: listenerRegistrationCount,
+        },
+      );
       return (): Promise<void> => {
         client.removeEventHandler(handler, builder);
+        listenerRegistrationCount -= 1;
+        diagnostic(
+          'diagnostic_listener_registration',
+          'removed',
+          'native_gramjs_handler_removed',
+          entity.id.toString(),
+          undefined,
+          { handlerRegistrationCount: listenerRegistrationCount },
+        );
         return Promise.resolve();
       };
     },
@@ -199,7 +326,9 @@ const defaultClientFactory: TelegramClientFactory = (options) => {
 };
 
 export class GramJsClientService {
+  private static nextNativeClientInstance = 1;
   private readonly client: TelegramClientAdapter;
+  private readonly nativeClientInstanceId: string;
   private state: TelegramClientState = 'disconnected';
   private lastError: string | undefined;
   private updatedAt = new Date().toISOString();
@@ -210,7 +339,8 @@ export class GramJsClientService {
     private readonly logger: AppLogger,
     clientFactory: TelegramClientFactory = defaultClientFactory,
   ) {
-    this.client = clientFactory(options);
+    this.nativeClientInstanceId = `gramjs-${GramJsClientService.nextNativeClientInstance++}`;
+    this.client = clientFactory(options, logger, this.nativeClientInstanceId);
     this.client.setBackgroundErrorHandler?.((error) => {
       this.lastError = errorReason(error);
       if (this.client.connected !== true && this.state === 'connected') {
@@ -279,6 +409,10 @@ export class GramJsClientService {
     return this.enqueue(async () => this.client.getTelegramUserId());
   }
 
+  public getNativeClientInstanceId(): string {
+    return this.nativeClientInstanceId;
+  }
+
   public resolveChannel(identifier: string): Promise<ResolvedTelegramChannel> {
     return this.enqueue(async () => {
       if (!this.getStatus().connected) throw new Error('Telegram client is not connected');
@@ -288,13 +422,18 @@ export class GramJsClientService {
 
   public subscribeChannel(
     identifier: string,
-    databaseChannelId: string,
+    context: TelegramChannelSubscriptionContext,
     onMessage: (event: TelegramIncomingMessage) => Promise<void>,
     onError: (error: unknown) => Promise<void> | void,
   ): Promise<() => Promise<void>> {
     return this.enqueue(async () => {
       if (!this.getStatus().connected) throw new Error('Telegram client is not connected');
-      return this.client.subscribeChannel(identifier, databaseChannelId, onMessage, onError);
+      return this.client.subscribeChannel(
+        identifier,
+        context,
+        async (event) => onMessage({ ...event, nativeClientInstanceId: this.nativeClientInstanceId }),
+        onError,
+      );
     });
   }
 
@@ -587,6 +726,54 @@ export async function mapGramJsEvent(
     ...(senderDisplayNames.length === 0 ? {} : { senderDisplayNames }),
     ...(sameChannel ? { telegramChannelId: subscribedEntity.id.toString() } : {}),
   };
+}
+
+function telegramChannelIdFromEvent(event: NewMessageEvent): string | undefined {
+  const peer = event.message.peerId;
+  return peer instanceof Api.PeerChannel ? peer.channelId.toString() : undefined;
+}
+
+function diagnosticFields(
+  context: TelegramChannelSubscriptionContext,
+  nativeClientInstanceId: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    assignmentId: context.assignmentId,
+    accountId: context.accountId,
+    accountSessionKey: context.accountSessionKey,
+    channelId: context.channelId,
+    expectedTelegramChannelId: context.expectedTelegramChannelId,
+    nativeClientInstanceId,
+    ...extra,
+  };
+}
+
+function rawUpdateMetadata(
+  event: NewMessageEvent,
+  entity: Api.Channel,
+  correlationId: string,
+): Record<string, unknown> {
+  const peer = event.message.peerId;
+  return {
+    correlationId,
+    updateType: event.originalUpdate.constructor.name,
+    ...(peer === undefined ? {} : { rawPeerType: peer.constructor.name }),
+    ...(peer instanceof Api.PeerChannel ? { rawPeerId: peer.channelId.toString() } : {}),
+    post: event.message.post === true,
+    broadcast: entity.broadcast === true,
+    hasMessage: event.message !== undefined,
+  };
+}
+
+function scopedChannelReason(
+  message: TelegramIncomingMessage,
+  expectedTelegramChannelId: string,
+): string {
+  if (message.chatKind !== 'channel_post') return `chat_kind:${message.chatKind}`;
+  if (message.telegramChannelId === undefined) return 'actual_channel_id_unavailable';
+  if (message.telegramChannelId !== expectedTelegramChannelId) return 'channel_identity_mismatch';
+  return 'unknown_scoped_channel_guard_failure';
 }
 
 async function buildTelegramMessageLink(message: Api.Message): Promise<string> {

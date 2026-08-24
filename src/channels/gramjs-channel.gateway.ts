@@ -2,6 +2,7 @@ import { AccountService } from '../accounts/account.service.js';
 import { TelegramClientRegistry } from '../user-client/telegram-client.registry.js';
 import type {
   ChannelAccessGateway,
+  ChannelAssignmentRecord,
   ChannelRecord,
   ResolvedTelegramChannel,
 } from './channel.types.js';
@@ -23,8 +24,13 @@ export class GramJsChannelGateway implements ChannelAccessGateway {
     return client.resolveChannel(normalizeChannelIdentifier(identifier));
   }
 
+  public getNativeClientInstanceId(accountKey: string): string | undefined {
+    return this.clients.get(accountKey)?.getNativeClientInstanceId();
+  }
+
   public subscribe(
     accountKey: string,
+    assignment: ChannelAssignmentRecord,
     channel: ChannelRecord,
     onMessage: (event: TelegramIncomingMessage) => Promise<void>,
     onError: (error: unknown) => void,
@@ -36,7 +42,14 @@ export class GramJsChannelGateway implements ChannelAccessGateway {
     }
     return client.subscribeChannel(
       channel.username ?? channel.telegramChannelId,
-      channel.telegramChannelId,
+      {
+        assignmentId: assignment.id,
+        accountId: assignment.accountId,
+        accountSessionKey: accountKey,
+        channelId: channel.id,
+        expectedTelegramChannelId: channel.telegramChannelId,
+        ...(channel.username === undefined ? {} : { usernameUsedForResolution: channel.username }),
+      },
       onMessage,
       onError,
     );

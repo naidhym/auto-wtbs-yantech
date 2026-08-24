@@ -59,6 +59,10 @@ export interface TelegramIncomingMessage {
   /** All non-empty sender names resolved from the native Telegram event. */
   readonly senderDisplayNames?: readonly TelegramSenderDisplayName[];
   readonly telegramChannelId?: string;
+  /** Internal runtime trace only; never persisted as message content. */
+  readonly nativeClientInstanceId?: string;
+  /** Short runtime-only link across diagnostic lifecycle logs. */
+  readonly correlationId?: string;
 }
 
 export type DetectionEventType =

@@ -27,6 +27,7 @@ import { ChannelRepository } from '../src/channels/channel.repository.js';
 import { ChannelService } from '../src/channels/channel.service.js';
 import type {
   ChannelAccessGateway,
+  ChannelAssignmentRecord,
   ChannelRecord,
   ResolvedTelegramChannel,
 } from '../src/channels/channel.types.js';
@@ -56,6 +57,7 @@ class FakeListenerGateway implements ChannelAccessGateway {
 
   public subscribe(
     _accountKey: string,
+    _assignment: ChannelAssignmentRecord,
     channel: ChannelRecord,
   ): Promise<() => Promise<void>> {
     return Promise.resolve(() => {

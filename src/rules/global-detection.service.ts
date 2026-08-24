@@ -22,6 +22,24 @@ export class GlobalDetectionService {
     readonly message: TelegramIncomingMessage;
   }): GlobalDetectionEvent | undefined {
     const { assignment, channel, message } = input;
+    this.logger.info(
+      {
+        account: assignment.accountKey,
+        channel: channel.id,
+        action: 'diagnostic_global_detection',
+        status: 'entered',
+        detected: false,
+        reason: 'message_received_from_listener',
+        assignmentId: assignment.id,
+        accountId: assignment.accountId,
+        channelId: channel.id,
+        telegramChannelId: channel.telegramChannelId,
+        nativeClientInstanceId: message.nativeClientInstanceId ?? 'unavailable',
+        ...(message.correlationId === undefined ? {} : { correlationId: message.correlationId }),
+        ...(message.sourceMessageId === undefined ? {} : { sourceMessageId: message.sourceMessageId }),
+      },
+      'Diagnostic global detection boundary entered',
+    );
     if (
       message.chatKind !== 'channel_post' ||
       message.telegramChannelId !== channel.telegramChannelId
@@ -40,12 +58,14 @@ export class GlobalDetectionService {
         undefined,
         message.sourceMessageId,
       );
+      this.logDiagnostic(input, false, reason);
       return undefined;
     }
 
     const configuration = this.keywords.getConfiguration();
     const text = normalizeGlobalMatchText(message.text);
     if (!configuration.enabled) {
+      this.logDiagnostic(input, false, 'global_detection_disabled');
       return undefined;
     }
 
@@ -68,6 +88,7 @@ export class GlobalDetectionService {
         matchedCleanup,
         message.sourceMessageId,
       );
+      this.logDiagnostic(input, false, 'cleanup_match');
       return { type: 'CLEANUP_MATCH', matchedCleanup };
     }
 
@@ -84,11 +105,13 @@ export class GlobalDetectionService {
         undefined,
         message.sourceMessageId,
       );
+      this.logDiagnostic(input, false, 'excluded');
       return { type: 'EXCLUDED', matchedExclude };
     }
 
     const matchedTrigger = firstMatch(text, configuration.triggerKeywords);
     if (matchedTrigger === undefined) {
+      this.logDiagnostic(input, false, 'no_trigger_match');
       return undefined;
     }
     this.record(
@@ -102,7 +125,32 @@ export class GlobalDetectionService {
       undefined,
       message.sourceMessageId,
     );
+    this.logDiagnostic(input, true, 'trigger_match');
     return { type: 'MATCH', matchedTrigger };
+  }
+
+  private logDiagnostic(
+    input: { readonly assignment: ChannelAssignmentRecord; readonly channel: ChannelRecord; readonly message: TelegramIncomingMessage },
+    detected: boolean,
+    reason: string,
+  ): void {
+    this.logger.info(
+      {
+        account: input.assignment.accountKey,
+        channel: input.channel.id,
+        action: 'diagnostic_global_detection',
+        status: detected ? 'detected' : 'not_detected',
+        detected,
+        reason,
+        assignmentId: input.assignment.id,
+        accountId: input.assignment.accountId,
+        channelId: input.channel.id,
+        telegramChannelId: input.channel.telegramChannelId,
+        ...(input.message.sourceMessageId === undefined ? {} : { sourceMessageId: input.message.sourceMessageId }),
+        ...(input.message.correlationId === undefined ? {} : { correlationId: input.message.correlationId }),
+      },
+      'Diagnostic global detection evaluated',
+    );
   }
 
   private record(

@@ -73,6 +73,23 @@ export class AutoReplyService implements ChannelMessageProcessor {
     if (this.stopping) return;
     const result = this.detection.process(input);
     const event = result.globalEvent;
+    this.logger.info(
+      {
+        account: input.assignment.accountKey,
+        channel: input.channel.id,
+        action: 'diagnostic_dispatch',
+        status: event?.type === 'MATCH' ? 'eligible_for_dispatch' : 'not_selected',
+        reason: event === undefined ? 'no_global_detection_match' : `global_detection:${event.type.toLowerCase()}`,
+        assignmentId: input.assignment.id,
+        accountId: input.assignment.accountId,
+        channelId: input.channel.id,
+        telegramChannelId: input.channel.telegramChannelId,
+        nativeClientInstanceId: input.message.nativeClientInstanceId ?? 'unavailable',
+        ...(input.message.correlationId === undefined ? {} : { correlationId: input.message.correlationId }),
+        ...(input.message.sourceMessageId === undefined ? {} : { sourceMessageId: input.message.sourceMessageId }),
+      },
+      'Diagnostic dispatch boundary reached',
+    );
     if (
       input.message.chatKind !== 'channel_post' ||
       input.message.telegramChannelId !== input.channel.telegramChannelId
@@ -177,6 +194,23 @@ export class AutoReplyService implements ChannelMessageProcessor {
           templateId: selected.template.id,
         },
         'Selected eligible account for auto-reply dispatch',
+      );
+      this.logger.info(
+        {
+          account: input.assignment.accountKey,
+          channel: input.channel.id,
+          action: 'diagnostic_dispatch',
+          status: 'selected',
+          reason: 'dispatch_claim_created',
+          assignmentId: input.assignment.id,
+          accountId: input.assignment.accountId,
+          channelId: input.channel.id,
+          telegramChannelId: input.channel.telegramChannelId,
+          sourceMessageId,
+          targetAccountId: selected.settings.accountId,
+          ...(input.message.correlationId === undefined ? {} : { correlationId: input.message.correlationId }),
+        },
+        'Diagnostic dispatch account selected',
       );
       this.record(
         'reply_scheduled',
@@ -438,9 +472,9 @@ export class AutoReplyService implements ChannelMessageProcessor {
       {
         type: 'reply_sent',
         accountNickname: selected.settings.accountNickname,
-        channelTitle: input.channel.title,
-        trigger: claim.matchedTrigger,
-        sourceMessageLink,
+          channelTitle: input.channel.title,
+          trigger: claim.matchedTrigger,
+          sourceMessageLink,
       },
       selected.settings.accountId,
       input.channel.id,
@@ -612,9 +646,9 @@ export class AutoReplyService implements ChannelMessageProcessor {
       input.assignment.accountKey,
       {
         type: 'reply_failed',
-        accountNickname: input.assignment.accountNickname,
-        channelTitle: input.channel.title,
-        reason,
+          accountNickname: input.assignment.accountNickname,
+          channelTitle: input.channel.title,
+          reason,
       },
       input.assignment.accountId,
       input.channel.id,

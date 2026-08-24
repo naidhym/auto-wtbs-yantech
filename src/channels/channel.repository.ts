@@ -173,6 +173,35 @@ export class ChannelRepository {
     return rows.map((assignment) => ({ assignment, channel: this.requireChannel(assignment.channelId) }));
   }
 
+  /** Includes ineligible rows so production diagnostics can show the first eligibility boundary. */
+  public listListenerAssignmentAudit(ownerTelegramId: string): Array<{
+    readonly channel: ChannelRecord;
+    readonly assignment: ChannelAssignmentRecord;
+    readonly accountEnabled: boolean;
+    readonly accountStatus: string;
+  }> {
+    const rows = this.database.prepare(`
+      SELECT ${ASSIGNMENT_COLUMNS}, a.is_enabled AS account_is_enabled, a.status AS account_status
+      FROM account_channels ac
+      JOIN accounts a ON a.id = ac.account_id
+      JOIN owners o ON o.id = a.owner_id
+      WHERE o.telegram_user_id = ? AND o.is_active = 1
+      ORDER BY ac.id, a.id
+    `).all(ownerTelegramId) as unknown as Array<AssignmentRow & {
+      account_is_enabled: number;
+      account_status: string;
+    }>;
+    return rows.map((row) => {
+      const assignment = mapAssignment(row);
+      return {
+        assignment,
+        channel: this.requireChannel(assignment.channelId),
+        accountEnabled: row.account_is_enabled === 1,
+        accountStatus: row.account_status,
+      };
+    });
+  }
+
   public listEffectiveAssignmentsForChannel(
     ownerTelegramId: string,
     channelId: number,

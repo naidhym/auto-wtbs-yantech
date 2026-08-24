@@ -12,6 +12,7 @@ import { ChannelRepository } from '../src/channels/channel.repository.js';
 import { ChannelService } from '../src/channels/channel.service.js';
 import type {
   ChannelAccessGateway,
+  ChannelAssignmentRecord,
   ChannelRecord,
   ResolvedTelegramChannel,
 } from '../src/channels/channel.types.js';
@@ -44,6 +45,7 @@ class FakeChannelGateway implements ChannelAccessGateway {
 
   public subscribe(
     accountKey: string,
+    _assignment: ChannelAssignmentRecord,
     channel: ChannelRecord,
     _onMessage: (event: TelegramIncomingMessage) => Promise<void>,
     onError: (error: unknown) => Promise<void> | void,
@@ -163,6 +165,17 @@ describe('M3 independent channel management', () => {
       .find((assignment) => assignment.accountKey === KEY_B);
     expect(bAssignment).toBeDefined();
     expect(harness.listener.isActive(bAssignment!.id)).toBe(true);
+    harness.close();
+  });
+
+  it('keeps independent native subscriptions for two channels assigned to one account', async () => {
+    const harness = createHarness();
+    const first = await harness.service.addChannel('@sharedchannel', KEY_A);
+    const second = await harness.service.addChannel('@secondchannel', KEY_A);
+
+    expect(harness.gateway.subscriptions.has(`${KEY_A}:${first.channel.id}`)).toBe(true);
+    expect(harness.gateway.subscriptions.has(`${KEY_A}:${second.channel.id}`)).toBe(true);
+    expect(harness.gateway.subscriptions.size).toBe(2);
     harness.close();
   });
 });

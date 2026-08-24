@@ -4,10 +4,12 @@ import type { LoginStatus } from '../accounts/account-manager.service.js';
 import type { AccountRecord } from '../accounts/account.types.js';
 import type {
   AccountAutomationSettings,
+  AccountNotification,
   OwnerNotification,
 } from '../automation/automation.types.js';
 import type { ChannelAssignmentRecord, ChannelRecord } from '../channels/channel.types.js';
 import { errorReason, type AppLogger } from '../logging/logger.js';
+import type { ActionReportRecord } from '../logging/event-log.repository.js';
 import type {
   ReplyTemplateRecord,
   RuleInput,
@@ -36,6 +38,7 @@ export interface AdminBotServiceOptions {
   readonly keywordController?: AdminGlobalKeywordController;
   readonly automationSettingsController?: AdminAccountAutomationController;
   readonly automationSafetyController?: AdminAutomationSafetyController;
+  readonly actionReportProvider?: AdminActionReportProvider;
 }
 
 export interface AdminAccountController {
@@ -117,6 +120,10 @@ export interface AdminAutomationSafetyController {
   stopAll(): Promise<void>;
   resumeAll(): Promise<void>;
   resumeChannel(channelId: number): Promise<void>;
+}
+
+export interface AdminActionReportProvider {
+  listActionReports(ownerTelegramId: string, offset: number, limit: number): ActionReportRecord[];
 }
 
 export interface AdminBotLifecycleAdapter {
@@ -238,6 +245,41 @@ export class AdminBotService {
         'All monitoring accounts were stopped for this channel. Resume manually from Channel Detail.',
       ].join('\n'),
     );
+    return true;
+  }
+
+  /** Owner-facing action report. Persistent history is written by AutoReplyService first. */
+  public async notifyActionReport(notification: AccountNotification): Promise<boolean> {
+    if (!this.isRunning()) return false;
+    const now = new Date().toLocaleTimeString('id-ID', { hour12: false });
+    const text = notification.type === 'reply_sent'
+      ? [
+          '🤖 AUTO WTB REPORT',
+          '━━━━━━━━━━━━━━',
+          '✅ Reply Sent',
+          '',
+          `Account: ${notification.accountNickname ?? '-'}`,
+          `Channel: ${notification.channelTitle}`,
+          `Trigger: ${notification.trigger}`,
+          '',
+          '💬 Reply: ✅ Success',
+          '',
+          `Time: ${now}`,
+        ].join('\n')
+      : [
+          '🤖 AUTO WTB REPORT',
+          '━━━━━━━━━━━━━━',
+          '❌ Reply Failed',
+          '',
+          `Account: ${notification.accountNickname ?? '-'}`,
+          `Channel: ${notification.channelTitle}`,
+          '',
+          'Reason:',
+          notification.reason,
+          '',
+          `Time: ${now}`,
+        ].join('\n');
+    await this.bot.telegram.sendMessage(this.options.ownerTelegramId, text);
     return true;
   }
 
@@ -397,6 +439,16 @@ export class AdminBotService {
     this.bot.action('m:health', async (context) => {
       await acknowledgeCallback(context);
       await this.showHealth(context, true);
+    });
+
+    this.bot.action('m:logs', async (context) => {
+      await acknowledgeCallback(context);
+      await this.showActionReports(context, 0, true);
+    });
+
+    this.bot.action(/^l:page:(\d+)$/, async (context) => {
+      await acknowledgeCallback(context);
+      await this.showActionReports(context, Number(context.match[1]), true);
     });
 
     this.bot.action('m:channels', async (context) => {
@@ -1793,10 +1845,37 @@ export class AdminBotService {
           Markup.button.callback('📊 Status', 'm:status'),
           Markup.button.callback('❤️ Health', 'm:health'),
         ],
+        [Markup.button.callback('📋 Logs', 'm:logs')],
         [
           Markup.button.callback('🚨 STOP ALL', 'auto:stop'),
           Markup.button.callback('▶️ RESUME ALL', 'auto:resume'),
         ],
+      ]),
+      edit,
+    );
+  }
+
+  private async showActionReports(context: Context, page: number, edit: boolean): Promise<void> {
+    const size = 10;
+    const safePage = Math.max(0, page);
+    const reports = this.options.actionReportProvider?.listActionReports(
+      this.options.ownerTelegramId,
+      safePage * size,
+      size,
+    ) ?? [];
+    const lines = reports.length === 0
+      ? ['📋 Logs', '', 'No successful or failed Auto WTB actions yet.']
+      : ['📋 Logs', '', ...reports.flatMap((report) => formatActionReport(report))];
+    const navigation = [
+      ...(safePage === 0 ? [] : [Markup.button.callback('⬅️ Prev', `l:page:${safePage - 1}`)]),
+      ...(reports.length < size ? [] : [Markup.button.callback('Next ➡️', `l:page:${safePage + 1}`)]),
+    ];
+    await this.present(
+      context,
+      lines.join('\n'),
+      Markup.inlineKeyboard([
+        [...navigation, Markup.button.callback('🔄 Refresh', `l:page:${safePage}`)],
+        [Markup.button.callback('⬅️ Back', 'm:main')],
       ]),
       edit,
     );
@@ -2668,6 +2747,23 @@ function statusIcon(status: AccountRecord['status']): string {
   if (status === 'error') return '🔴';
   if (status === 'connecting') return '🟡';
   return '⚪';
+}
+
+function formatActionReport(report: ActionReportRecord): string[] {
+  const sourceMessageId = report.metadata.sourceMessageId;
+  const trigger = report.metadata.trigger;
+  const reactionStatus = report.metadata.reactionStatus;
+  return [
+    `${report.eventType === 'reply_sent' ? '✅ SUCCESS' : '❌ FAILED'} · ${report.createdAt}`,
+    `Account: ${report.accountNickname}`,
+    `Channel: ${report.channelTitle}`,
+    ...(typeof trigger === 'string' ? [`Trigger: ${trigger}`] : []),
+    ...(typeof sourceMessageId === 'number' ? [`Source: #${sourceMessageId}`] : []),
+    `Action: ${report.eventType === 'reply_sent' ? 'Reply sent' : 'Reply failed'}`,
+    ...(reactionStatus === undefined ? [] : [`Reaction: ${reactionStatus}`]),
+    ...(report.reason === undefined ? [] : [`Reason: ${report.reason}`]),
+    '',
+  ];
 }
 
 async function acknowledgeCallback(context: Context): Promise<void> {
