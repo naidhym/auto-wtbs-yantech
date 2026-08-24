@@ -1,6 +1,5 @@
 import { AccountService } from '../accounts/account.service.js';
 import { TelegramClientRegistry } from '../user-client/telegram-client.registry.js';
-import { AccountAutomationSettingsService } from './account-automation-settings.service.js';
 import type {
   AccountNotification,
   AccountNotificationGateway,
@@ -44,7 +43,6 @@ export class GramJsAccountNotificationGateway implements AccountNotificationGate
   public constructor(
     private readonly accounts: AccountService,
     private readonly clients: TelegramClientRegistry,
-    private readonly settings: AccountAutomationSettingsService,
   ) {}
 
   public async notify(accountKey: string, notification: AccountNotification): Promise<boolean> {
@@ -52,17 +50,18 @@ export class GramJsAccountNotificationGateway implements AccountNotificationGate
     if (!account.enabled) return false;
     const client = this.clients.get(accountKey);
     if (client === undefined || !client.getStatus().connected) return false;
-    const target = this.settings.get(accountKey).notificationTarget;
-    if (target === undefined) return false;
-
     if (notification.type === 'reply_sent') {
-      await client.sendOperationalNotification(target, {
+      await client.sendOperationalNotification('me', {
         text: [
           '🤖 AUTO WTB SENT',
           '',
           `Account: ${notification.accountNickname ?? account.nickname}`,
           `Channel: ${notification.channelTitle}`,
           `Trigger: ${notification.trigger}`,
+          `Source message ID: ${notification.sourceMessageId}`,
+          '',
+          'Reply: SUCCESS',
+          `Reaction: ${formatReactionStatus(notification.reactionStatus, notification.reactionReason)}`,
         ].join('\n'),
         link: {
           label: '🔗 Open Source Message',
@@ -72,15 +71,38 @@ export class GramJsAccountNotificationGateway implements AccountNotificationGate
       return true;
     }
 
-    await client.sendOperationalNotification(target, {
+    await client.sendOperationalNotification('me', {
       text: [
         '❌ AUTO WTB FAILED',
         '',
         `Account: ${notification.accountNickname ?? account.nickname}`,
         `Channel: ${notification.channelTitle}`,
+        ...(notification.trigger === undefined ? [] : [`Trigger: ${notification.trigger}`]),
+        ...(notification.sourceMessageId === undefined
+          ? []
+          : [`Source message ID: ${notification.sourceMessageId}`]),
+        '',
+        'Reply: FAILED',
         `Reason: ${notification.reason}`,
       ].join('\n'),
+      ...(notification.sourceMessageLink === undefined
+        ? {}
+        : {
+            link: {
+              label: 'Open Source Message',
+              url: notification.sourceMessageLink,
+            },
+          }),
     });
     return true;
   }
+}
+
+function formatReactionStatus(
+  status: 'sent' | 'skipped' | 'failed',
+  reason: string | undefined,
+): string {
+  if (status === 'sent') return 'SENT';
+  if (reason === undefined) return status.toUpperCase();
+  return `${status.toUpperCase()} (${reason})`;
 }

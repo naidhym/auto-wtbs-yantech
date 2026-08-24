@@ -1,12 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AccountService } from '../src/accounts/account.service.js';
-import type { AccountAutomationSettingsService } from '../src/automation/account-automation-settings.service.js';
 import { GramJsAccountNotificationGateway } from '../src/automation/gramjs-auto-reply.gateway.js';
 import type { TelegramClientRegistry } from '../src/user-client/telegram-client.registry.js';
 
 describe('M6 account notification gateway', () => {
-  it('sends an action account notification to its configured monitoring bot with the source-post link', async () => {
+  it('sends a successful action report to the acting userbot Saved Messages with a source link', async () => {
     const sentByAccount = new Map<string, Array<{ target: string; notification: unknown }>>();
     const actionAccountKey = 'account-00000000-0000-4000-8000-000000000a01';
     const otherAccountKey = 'account-00000000-0000-4000-8000-000000000b02';
@@ -18,28 +17,39 @@ describe('M6 account notification gateway', () => {
       get: (accountKey: string) => ({ enabled: clients.has(accountKey), nickname: accountKey }),
     } as unknown as AccountService;
     const registry = { get: (accountKey: string) => clients.get(accountKey) } as unknown as TelegramClientRegistry;
-    const settings = createSettings(actionAccountKey, '@MonitoringBot');
-    const gateway = new GramJsAccountNotificationGateway(accounts, registry, settings);
+    const gateway = new GramJsAccountNotificationGateway(accounts, registry);
 
     await expect(gateway.notify(actionAccountKey, {
       type: 'reply_sent',
       accountNickname: 'Ubot 1',
       channelTitle: 'BASE WIB',
       trigger: 'bucin',
+      sourceMessageId: 77,
       sourceMessageLink: 'https://t.me/base_wib/77',
+      reactionStatus: 'sent',
     })).resolves.toBe(true);
 
     expect(sentByAccount.get(actionAccountKey)).toEqual([{
-      target: '@MonitoringBot',
+      target: 'me',
       notification: {
-        text: '🤖 AUTO WTB SENT\n\nAccount: Ubot 1\nChannel: BASE WIB\nTrigger: bucin',
+        text: [
+          '🤖 AUTO WTB SENT',
+          '',
+          'Account: Ubot 1',
+          'Channel: BASE WIB',
+          'Trigger: bucin',
+          'Source message ID: 77',
+          '',
+          'Reply: SUCCESS',
+          'Reaction: SENT',
+        ].join('\n'),
         link: { label: '🔗 Open Source Message', url: 'https://t.me/base_wib/77' },
       },
     }]);
     expect(sentByAccount.get(otherAccountKey)).toBeUndefined();
   });
 
-  it('allows separate accounts to use separate targets and does not use Saved Messages', async () => {
+  it('keeps two accounts isolated and sends each failure report to its own Saved Messages', async () => {
     const sentByAccount = new Map<string, Array<{ target: string; notification: unknown }>>();
     const accountA = 'account-00000000-0000-4000-8000-000000000a01';
     const accountB = 'account-00000000-0000-4000-8000-000000000b02';
@@ -49,39 +59,59 @@ describe('M6 account notification gateway', () => {
     ]);
     const accounts = { get: () => ({ enabled: true, nickname: 'Fallback' }) } as unknown as AccountService;
     const registry = { get: (key: string) => clients.get(key) } as unknown as TelegramClientRegistry;
-    const settings = {
-      get: (key: string) => ({ notificationTarget: key === accountA ? '@BotA' : '@BotB' }),
-    } as unknown as AccountAutomationSettingsService;
-    const gateway = new GramJsAccountNotificationGateway(accounts, registry, settings);
+    const gateway = new GramJsAccountNotificationGateway(accounts, registry);
 
-    await gateway.notify(accountA, { type: 'reply_failed', channelTitle: 'A', reason: 'failed' });
-    await gateway.notify(accountB, { type: 'reply_failed', channelTitle: 'B', reason: 'failed' });
+    await gateway.notify(accountA, {
+      type: 'reply_failed', channelTitle: 'A', trigger: 'bucin', sourceMessageId: 91,
+      sourceMessageLink: 'https://t.me/a_channel/91', reason: 'FLOOD_WAIT_30',
+    });
+    await gateway.notify(accountB, {
+      type: 'reply_failed', channelTitle: 'B', reason: 'CHAT_WRITE_FORBIDDEN',
+    });
 
-    expect(sentByAccount.get(accountA)?.[0]?.target).toBe('@BotA');
-    expect(sentByAccount.get(accountB)?.[0]?.target).toBe('@BotB');
-    expect([...sentByAccount.values()].flat().some(({ target }) => target === 'me')).toBe(false);
+    expect(sentByAccount.get(accountA)?.[0]).toEqual({
+      target: 'me',
+      notification: {
+        text: [
+          '❌ AUTO WTB FAILED',
+          '',
+          'Account: Fallback',
+          'Channel: A',
+          'Trigger: bucin',
+          'Source message ID: 91',
+          '',
+          'Reply: FAILED',
+          'Reason: FLOOD_WAIT_30',
+        ].join('\n'),
+        link: { label: 'Open Source Message', url: 'https://t.me/a_channel/91' },
+      },
+    });
+    expect(sentByAccount.get(accountB)?.[0]).toEqual({
+      target: 'me',
+      notification: {
+        text: [
+          '❌ AUTO WTB FAILED',
+          '',
+          'Account: Fallback',
+          'Channel: B',
+          '',
+          'Reply: FAILED',
+          'Reason: CHAT_WRITE_FORBIDDEN',
+        ].join('\n'),
+      },
+    });
   });
 
-  it('returns unavailable when the account lacks a configured target', async () => {
+  it('returns unavailable when the acting account is not connected', async () => {
     const accounts = { get: () => ({ enabled: true, nickname: 'Ubot' }) } as unknown as AccountService;
-    const registry = { get: () => ({ getStatus: () => ({ connected: true }) }) } as unknown as TelegramClientRegistry;
-    const settings = createSettings('missing-account', undefined);
-    const gateway = new GramJsAccountNotificationGateway(accounts, registry, settings);
+    const registry = { get: () => ({ getStatus: () => ({ connected: false }) }) } as unknown as TelegramClientRegistry;
+    const gateway = new GramJsAccountNotificationGateway(accounts, registry);
 
     await expect(gateway.notify('missing-account', {
       type: 'reply_failed', channelTitle: 'BASE WIB', reason: 'simulated failure',
     })).resolves.toBe(false);
   });
 });
-
-function createSettings(accountKey: string, notificationTarget: string | undefined) {
-  return {
-    get: (key: string) => {
-      if (key !== accountKey) throw new Error('Unexpected account');
-      return { notificationTarget };
-    },
-  } as unknown as AccountAutomationSettingsService;
-}
 
 function createConnectedNotificationClient(
   accountKey: string,

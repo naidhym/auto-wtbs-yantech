@@ -1,4 +1,4 @@
-import type { ChannelMessageProcessor } from '../channels/channel.types.js';
+import type { ChannelMessageProcessor, ChannelRecord } from '../channels/channel.types.js';
 import { ChannelRepository } from '../channels/channel.repository.js';
 import { EventLogRepository } from '../logging/event-log.repository.js';
 import { errorReason, type AppLogger } from '../logging/logger.js';
@@ -103,7 +103,7 @@ export class AutoReplyService implements ChannelMessageProcessor {
 
     const sourceMessageId = input.message.sourceMessageId;
     if (sourceMessageId === undefined || !Number.isSafeInteger(sourceMessageId) || sourceMessageId < 1) {
-      await this.notifyFailure(input, 'Source message ID is unavailable');
+      await this.notifyFailure(input, 'Source message ID is unavailable', event.matchedTrigger);
       return;
     }
 
@@ -147,6 +147,7 @@ export class AutoReplyService implements ChannelMessageProcessor {
       await this.notifyFailure(
         input,
         'No connected assigned account with an enabled reply template is available',
+        event.matchedTrigger,
       );
       return;
     }
@@ -399,6 +400,7 @@ export class AutoReplyService implements ChannelMessageProcessor {
         reason,
         'error',
       );
+      const sourceMessageLink = this.createSourceMessageLink(channel, claim.sourceMessageId);
       await this.notifyAccount(
         selected.settings.accountKey,
         {
@@ -406,6 +408,9 @@ export class AutoReplyService implements ChannelMessageProcessor {
           accountNickname: selected.settings.accountNickname,
           channelTitle: input.channel.title,
           reason,
+          trigger: claim.matchedTrigger,
+          sourceMessageId: claim.sourceMessageId,
+          ...(sourceMessageLink === undefined ? {} : { sourceMessageLink }),
         },
         selected.settings.accountId,
         input.channel.id,
@@ -474,7 +479,10 @@ export class AutoReplyService implements ChannelMessageProcessor {
         accountNickname: selected.settings.accountNickname,
           channelTitle: input.channel.title,
           trigger: claim.matchedTrigger,
+          sourceMessageId: claim.sourceMessageId,
           sourceMessageLink,
+          reactionStatus: reaction.status,
+          ...(reaction.reason === undefined ? {} : { reactionReason: reaction.reason }),
       },
       selected.settings.accountId,
       input.channel.id,
@@ -631,7 +639,11 @@ export class AutoReplyService implements ChannelMessageProcessor {
   private async notifyFailure(
     input: Parameters<ChannelMessageProcessor['process']>[0],
     reason: string,
+    trigger?: string,
   ): Promise<void> {
+    const sourceMessageLink = input.message.sourceMessageId === undefined
+      ? undefined
+      : this.createSourceMessageLink(input.channel, input.message.sourceMessageId);
     this.record(
       'reply_failed',
       'failed',
@@ -649,6 +661,9 @@ export class AutoReplyService implements ChannelMessageProcessor {
           accountNickname: input.assignment.accountNickname,
           channelTitle: input.channel.title,
           reason,
+          ...(trigger === undefined ? {} : { trigger }),
+          ...(input.message.sourceMessageId === undefined ? {} : { sourceMessageId: input.message.sourceMessageId }),
+          ...(sourceMessageLink === undefined ? {} : { sourceMessageLink }),
       },
       input.assignment.accountId,
       input.channel.id,
@@ -685,6 +700,18 @@ export class AutoReplyService implements ChannelMessageProcessor {
       reason,
       notified ? 'info' : 'warn',
     );
+  }
+
+  private createSourceMessageLink(channel: ChannelRecord, sourceMessageId: number): string | undefined {
+    try {
+      return createTelegramMessageLink({
+        ...(channel.username === undefined ? {} : { username: channel.username }),
+        privateChannelId: channel.telegramChannelId,
+        messageId: sourceMessageId,
+      });
+    } catch {
+      return undefined;
+    }
   }
 
   private async notifySafety(

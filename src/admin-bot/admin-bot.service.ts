@@ -4,7 +4,6 @@ import type { LoginStatus } from '../accounts/account-manager.service.js';
 import type { AccountRecord } from '../accounts/account.types.js';
 import type {
   AccountAutomationSettings,
-  AccountNotification,
   OwnerNotification,
 } from '../automation/automation.types.js';
 import type { ChannelAssignmentRecord, ChannelRecord } from '../channels/channel.types.js';
@@ -245,41 +244,6 @@ export class AdminBotService {
         'All monitoring accounts were stopped for this channel. Resume manually from Channel Detail.',
       ].join('\n'),
     );
-    return true;
-  }
-
-  /** Owner-facing action report. Persistent history is written by AutoReplyService first. */
-  public async notifyActionReport(notification: AccountNotification): Promise<boolean> {
-    if (!this.isRunning()) return false;
-    const now = new Date().toLocaleTimeString('id-ID', { hour12: false });
-    const text = notification.type === 'reply_sent'
-      ? [
-          '🤖 AUTO WTB REPORT',
-          '━━━━━━━━━━━━━━',
-          '✅ Reply Sent',
-          '',
-          `Account: ${notification.accountNickname ?? '-'}`,
-          `Channel: ${notification.channelTitle}`,
-          `Trigger: ${notification.trigger}`,
-          '',
-          '💬 Reply: ✅ Success',
-          '',
-          `Time: ${now}`,
-        ].join('\n')
-      : [
-          '🤖 AUTO WTB REPORT',
-          '━━━━━━━━━━━━━━',
-          '❌ Reply Failed',
-          '',
-          `Account: ${notification.accountNickname ?? '-'}`,
-          `Channel: ${notification.channelTitle}`,
-          '',
-          'Reason:',
-          notification.reason,
-          '',
-          `Time: ${now}`,
-        ].join('\n');
-    await this.bot.telegram.sendMessage(this.options.ownerTelegramId, text);
     return true;
   }
 
@@ -2760,7 +2724,7 @@ function formatActionReport(report: ActionReportRecord): string[] {
     ...(typeof trigger === 'string' ? [`Trigger: ${trigger}`] : []),
     ...(typeof sourceMessageId === 'number' ? [`Source: #${sourceMessageId}`] : []),
     `Action: ${report.eventType === 'reply_sent' ? 'Reply sent' : 'Reply failed'}`,
-    ...(reactionStatus === undefined ? [] : [`Reaction: ${reactionStatus}`]),
+    ...(typeof reactionStatus === 'string' ? [`Reaction: ${reactionStatus}`] : []),
     ...(report.reason === undefined ? [] : [`Reason: ${report.reason}`]),
     '',
   ];

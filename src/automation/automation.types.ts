@@ -51,13 +51,19 @@ export type AccountNotification =
       readonly accountNickname?: string;
       readonly channelTitle: string;
       readonly trigger: string;
+      readonly sourceMessageId: number;
       readonly sourceMessageLink: string;
+      readonly reactionStatus: ReactionStatus;
+      readonly reactionReason?: string;
     }
   | {
       readonly type: 'reply_failed';
       readonly accountNickname?: string;
       readonly channelTitle: string;
       readonly reason: string;
+      readonly trigger?: string;
+      readonly sourceMessageId?: number;
+      readonly sourceMessageLink?: string;
     }
 
 export interface AccountNotificationGateway {

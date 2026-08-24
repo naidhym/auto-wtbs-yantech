@@ -226,7 +226,10 @@ describe('M5 auto reply and safety', () => {
         accountNickname: 'Account A',
         channelTitle: 'Channel One',
         trigger: 'bucin',
+        sourceMessageId: 103,
         sourceMessageLink: 'https://t.me/channel_one/103',
+        reactionStatus: 'skipped',
+        reactionReason: 'auto_reaction_disabled',
       },
     });
     expect(harness.eventTypes()).toEqual(expect.arrayContaining([
@@ -323,7 +326,9 @@ describe('M5 auto reply and safety', () => {
         accountNickname: 'Account A',
         channelTitle: 'Channel One',
         trigger: 'bucin',
+        sourceMessageId: 115,
         sourceMessageLink: 'https://t.me/channel_one/115',
+        reactionStatus: 'sent',
       },
     });
     expect(harness.eventTypes()).toContain('reply_link_unavailable');
@@ -372,7 +377,10 @@ describe('M5 auto reply and safety', () => {
         accountNickname: 'Account B',
         channelTitle: 'Channel Two',
         trigger: 'bucin',
+        sourceMessageId: 116,
         sourceMessageLink: 'https://t.me/c/900002/116',
+        reactionStatus: 'skipped',
+        reactionReason: 'auto_reaction_disabled',
       },
     });
     expect(harness.connection.prepare(`
