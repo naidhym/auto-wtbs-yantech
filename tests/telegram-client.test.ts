@@ -237,6 +237,8 @@ describe('GramJS client lifecycle foundation', () => {
     expect((request.channel as Api.InputChannel).channelId.toString()).toBe('333333333');
     expect((request.channel as Api.InputChannel).accessHash?.toString()).toBe('987654321');
     expect(request.pts).toBe(47);
+    expect(request.limit).toBe(100);
+    expect(request.force).toBe(true);
 
     await expect(recoverChannelUpdateState(
       { invoke } as Pick<TelegramClient, 'invoke'>,
@@ -244,6 +246,70 @@ describe('GramJS client lifecycle foundation', () => {
       new Api.UpdateChannelTooLong({ channelId: bigInt('444444444'), pts: 48 }),
     )).resolves.toBe(false);
     expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays recovered channel messages until the channel gap is closed', async () => {
+    const entity = new Api.Channel({
+      id: bigInt('333333334'),
+      accessHash: bigInt('987654322'),
+      title: 'Gap Replay Test',
+      photo: new Api.ChatPhotoEmpty(),
+      date: 0,
+      broadcast: true,
+    });
+    const recoveredMessage = new Api.Message({
+      out: false,
+      mentioned: false,
+      mediaUnread: false,
+      silent: false,
+      post: true,
+      id: 91,
+      peerId: new Api.PeerChannel({ channelId: entity.id }),
+      message: 'recovered post',
+      date: 0,
+    });
+    const invoke = vi.fn()
+      .mockResolvedValueOnce(new Api.updates.ChannelDifference({
+        final: true,
+        pts: 50,
+        timeout: 0,
+        newMessages: [recoveredMessage],
+        otherUpdates: [],
+        chats: [],
+        users: [],
+      }));
+    const addEventHandler = vi.fn();
+    const getMe = vi.fn().mockResolvedValue(new Api.User({ id: bigInt('1'), firstName: 'Test' }));
+    const fakeClient = {
+      invoke,
+      addEventHandler,
+      getMe,
+      _selfInputPeer: new Api.InputPeerUser({ userId: bigInt('1'), accessHash: bigInt('1') }),
+      _eventBuilders: [],
+      _entityCache: { add: vi.fn() },
+      session: { processEntities: vi.fn() },
+      _errorHandler: undefined,
+      _log: { canSend: vi.fn().mockReturnValue(false), error: vi.fn() },
+    } as unknown as TelegramClient;
+    const received: NewMessageEvent[] = [];
+    const builder = createChannelMessageBuilder(entity.id.toString());
+    await builder.resolve(fakeClient);
+    addEventHandler(() => undefined, builder);
+    fakeClient._eventBuilders.push([builder, (event: NewMessageEvent) => {
+      received.push(event);
+      return Promise.resolve();
+    }] as never);
+
+    await expect(recoverChannelUpdateState(
+      fakeClient,
+      entity,
+      new Api.UpdateChannelTooLong({ channelId: entity.id, pts: 49 }),
+    )).resolves.toBe(true);
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(received).toHaveLength(1);
+    expect(received[0]?.message.id).toBe(91);
+    expect(received[0]?.originalUpdate).toBeInstanceOf(Api.UpdateNewChannelMessage);
   });
 
   it('hydrates a private numeric channel from dialogs and rejects megagroups', async () => {

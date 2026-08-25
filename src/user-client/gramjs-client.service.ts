@@ -3,6 +3,7 @@ import type { UserAuthParams } from 'telegram/client/auth.js';
 import { NewMessage, NewMessageEvent, Raw } from 'telegram/events/index.js';
 import { LogLevel } from 'telegram/extensions/Logger.js';
 import { StringSession } from 'telegram/sessions/index.js';
+import { _handleUpdate } from 'telegram/client/updates.js';
 
 import type {
   ResolvedTelegramChannel,
@@ -722,13 +723,63 @@ export async function recoverChannelUpdateState(
     return false;
   }
 
-  await client.invoke(new Api.updates.GetChannelDifference({
-    channel: utils.getInputChannel(entity),
-    filter: new Api.ChannelMessagesFilterEmpty(),
-    pts: update.pts ?? 0,
-    limit: 1,
-  }));
-  return true;
+  const channel = utils.getInputChannel(entity);
+  let pts = update.pts ?? 1;
+
+  for (;;) {
+    const difference = await client.invoke(new Api.updates.GetChannelDifference({
+      channel,
+      filter: new Api.ChannelMessagesFilterEmpty(),
+      pts,
+      limit: 100,
+      force: true,
+    }));
+
+    if (difference instanceof Api.updates.ChannelDifferenceEmpty) {
+      return true;
+    }
+
+    if (difference instanceof Api.updates.ChannelDifferenceTooLong) {
+      for (const differenceUpdate of buildChannelTooLongUpdates(difference)) {
+        _handleUpdate(client as TelegramClient, differenceUpdate);
+      }
+      return true;
+    }
+
+    for (const differenceUpdate of [
+      ...difference.otherUpdates,
+      ...difference.newMessages.map((message) => new Api.UpdateNewChannelMessage({
+        message,
+        pts: difference.pts,
+        ptsCount: 0,
+      })),
+    ]) {
+      _handleUpdate(client as TelegramClient, differenceUpdate);
+    }
+
+    if (difference.final) {
+      return true;
+    }
+
+    pts = difference.pts;
+  }
+}
+
+function buildChannelTooLongUpdates(
+  difference: Api.updates.ChannelDifferenceTooLong,
+): Api.TypeUpdate[] {
+  const pts = difference.dialog instanceof Api.Dialog ? difference.dialog.pts ?? 0 : 0;
+  const updates: Api.TypeUpdate[] = [];
+  for (const message of difference.messages) {
+    if (message instanceof Api.Message) {
+      updates.push(new Api.UpdateNewChannelMessage({
+        message,
+        pts,
+        ptsCount: 0,
+      }));
+    }
+  }
+  return updates;
 }
 
 function permissionNames(rights: unknown): readonly string[] | undefined {
