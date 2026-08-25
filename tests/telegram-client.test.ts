@@ -6,10 +6,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { Api, type TelegramClient } from 'telegram';
 import bigInt from 'big-integer';
 import type { UserAuthParams } from 'telegram/client/auth.js';
-import { NewMessageEvent } from 'telegram/events/index.js';
+import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 
 import { createLogger } from '../src/logging/logger.js';
 import {
+  consumePendingChannelTooLongUpdate,
   createHeartReactionRequest,
   createTelegramNotificationPayload,
   createTelegramMessageLink,
@@ -19,6 +20,7 @@ import {
   mapGramJsEvent,
   reactToSentComment,
   recoverChannelUpdateState,
+  rememberPendingChannelTooLongUpdate,
   resolveBroadcastChannel,
   type TelegramClientAdapter,
 } from '../src/user-client/gramjs-client.service.js';
@@ -310,6 +312,70 @@ describe('GramJS client lifecycle foundation', () => {
     expect(received).toHaveLength(1);
     expect(received[0]?.message.id).toBe(91);
     expect(received[0]?.originalUpdate).toBeInstanceOf(Api.UpdateNewChannelMessage);
+  });
+
+  it('recovers an UpdateChannelTooLong that arrived before the channel subscribed', async () => {
+    const channelId = bigInt('777777777');
+    const entity = new Api.Channel({
+      id: channelId,
+      accessHash: bigInt('111111111'),
+      title: 'Pre Subscription Gap',
+      photo: new Api.ChatPhotoEmpty(),
+      date: 0,
+      broadcast: true,
+    });
+    const pending = new Map<string, Api.UpdateChannelTooLong>();
+    const recoveredMessage = new Api.Message({
+      out: false,
+      mentioned: false,
+      mediaUnread: false,
+      silent: false,
+      post: true,
+      id: 101,
+      peerId: new Api.PeerChannel({ channelId }),
+      message: 'late recovered post',
+      date: 0,
+    });
+    const invoke = vi.fn().mockResolvedValue(new Api.updates.ChannelDifference({
+      final: true,
+      pts: 12,
+      timeout: 0,
+      newMessages: [recoveredMessage],
+      otherUpdates: [],
+      chats: [],
+      users: [],
+    }));
+    const fakeClient = {
+      invoke,
+      getMe: vi.fn().mockResolvedValue(new Api.User({ id: bigInt('1'), firstName: 'Test' })),
+      _selfInputPeer: new Api.InputPeerUser({ userId: bigInt('1'), accessHash: bigInt('1') }),
+      _eventBuilders: [] as Array<[NewMessage, (event: NewMessageEvent) => Promise<void>]>,
+      _entityCache: { add: vi.fn() },
+      session: { processEntities: vi.fn() },
+      _errorHandler: undefined,
+      _log: { canSend: vi.fn().mockReturnValue(false), error: vi.fn() },
+    } as unknown as TelegramClient;
+    const received: NewMessageEvent[] = [];
+    const builder = createChannelMessageBuilder(channelId.toString());
+    await builder.resolve(fakeClient);
+    fakeClient._eventBuilders.push([builder, (event: NewMessageEvent) => {
+      received.push(event);
+      return Promise.resolve();
+    }]);
+
+    rememberPendingChannelTooLongUpdate(
+      pending,
+      new Api.UpdateChannelTooLong({ channelId, pts: 11 }),
+    );
+    const pendingUpdate = consumePendingChannelTooLongUpdate(pending, channelId.toString());
+    expect(pendingUpdate).toBeInstanceOf(Api.UpdateChannelTooLong);
+
+    await expect(recoverChannelUpdateState(fakeClient, entity, pendingUpdate)).resolves.toBe(true);
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(received).toHaveLength(1);
+    expect(received[0]?.message.id).toBe(101);
+    expect(pending.size).toBe(0);
   });
 
   it('hydrates a private numeric channel from dialogs and rejects megagroups', async () => {

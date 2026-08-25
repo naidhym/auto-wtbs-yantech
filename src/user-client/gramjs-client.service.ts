@@ -112,6 +112,7 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
   }
   let backgroundErrorHandler: (error: unknown) => Promise<void> = () => Promise.resolve();
   let listenerRegistrationCount = 0;
+  const pendingChannelTooLongUpdates = new Map<string, Api.UpdateChannelTooLong>();
   const reportBackgroundError = async (error: unknown): Promise<void> => {
     try {
       await backgroundErrorHandler(error);
@@ -143,6 +144,9 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
     );
   };
   client.addEventHandler(nativeUpdateObserver, new Raw({ types: [Api.UpdateNewChannelMessage] }));
+  client.addEventHandler((update: unknown) => {
+    rememberPendingChannelTooLongUpdate(pendingChannelTooLongUpdates, update);
+  }, new Raw({ types: [Api.UpdateChannelTooLong] }));
   logger?.info(
     {
       account: options.accountKey,
@@ -286,6 +290,18 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
           });
       };
       client.addEventHandler(channelRecoveryHandler, channelRecoveryBuilder);
+      const pendingChannelRecovery = consumePendingChannelTooLongUpdate(
+        pendingChannelTooLongUpdates,
+        entity.id.toString(),
+      );
+      if (pendingChannelRecovery !== undefined) {
+        channelRecoveryInFlight = recoverChannelUpdateState(client, entity, pendingChannelRecovery)
+          .then(() => undefined)
+          .catch(reportBackgroundError)
+          .finally(() => {
+            channelRecoveryInFlight = undefined;
+          });
+      }
       const handler = (event: NewMessageEvent): void => {
         void (async () => {
           const correlationId = `upd-${nextDiagnosticCorrelationId++}`;
@@ -711,6 +727,26 @@ export function createChannelMessageBuilder(telegramChannelId: string): NewMessa
  * channel gap, acknowledge its latest pts with the channel's access-hash-backed
  * InputChannel so future live updates resume without replaying missed posts.
  */
+export function rememberPendingChannelTooLongUpdate(
+  pendingUpdates: Map<string, Api.UpdateChannelTooLong>,
+  update: unknown,
+): void {
+  if (update instanceof Api.UpdateChannelTooLong) {
+    pendingUpdates.set(update.channelId.toString(), update);
+  }
+}
+
+export function consumePendingChannelTooLongUpdate(
+  pendingUpdates: Map<string, Api.UpdateChannelTooLong>,
+  telegramChannelId: string,
+): Api.UpdateChannelTooLong | undefined {
+  const update = pendingUpdates.get(telegramChannelId);
+  if (update !== undefined) {
+    pendingUpdates.delete(telegramChannelId);
+  }
+  return update;
+}
+
 export async function recoverChannelUpdateState(
   client: Pick<TelegramClient, 'invoke'>,
   entity: Api.Channel,
