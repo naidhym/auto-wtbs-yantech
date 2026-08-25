@@ -42,7 +42,7 @@ describe('database foundation', () => {
 
     const first = new DatabaseService(databasePath, loggerHandle.logger);
     first.initialize();
-    expect(first.getMigrationVersion()).toBe(8);
+    expect(first.getMigrationVersion()).toBe(9);
     expect(first.getTableNames()).toEqual(
       [...FOUNDATION_TABLES, 'schema_migrations'].sort(),
     );
@@ -80,7 +80,7 @@ describe('database foundation', () => {
 
     const second = new DatabaseService(databasePath, loggerHandle.logger);
     second.initialize();
-    expect(second.getMigrationVersion()).toBe(8);
+    expect(second.getMigrationVersion()).toBe(9);
     expect(second.getTableNames()).toEqual(
       [...FOUNDATION_TABLES, 'schema_migrations'].sort(),
     );
@@ -280,7 +280,7 @@ describe('database foundation', () => {
     const service = new DatabaseService(databasePath, logger.logger);
     service.initialize();
     const connection = service.getConnection();
-    expect(service.getMigrationVersion()).toBe(8);
+    expect(service.getMigrationVersion()).toBe(9);
     expect(connection.prepare('SELECT COUNT(*) AS count FROM channels').get())
       .toEqual({ count: 1 });
     expect(connection.prepare('SELECT COUNT(*) AS count FROM account_channels').get())
@@ -294,7 +294,7 @@ describe('database foundation', () => {
 
     const reopened = new DatabaseService(databasePath, logger.logger);
     reopened.initialize();
-    expect(reopened.getMigrationVersion()).toBe(8);
+    expect(reopened.getMigrationVersion()).toBe(9);
     expect(reopened.getConnection().prepare('SELECT COUNT(*) AS count FROM account_channels').get())
       .toEqual({ count: 2 });
     reopened.close();
@@ -343,7 +343,7 @@ describe('database foundation', () => {
     const service = new DatabaseService(databasePath, logger.logger);
     service.initialize();
     const connection = service.getConnection();
-    expect(service.getMigrationVersion()).toBe(8);
+    expect(service.getMigrationVersion()).toBe(9);
     expect(connection.prepare(`
       SELECT id, account_id, name, body, is_enabled FROM reply_templates WHERE id = 7
     `).get()).toEqual({
@@ -384,7 +384,7 @@ describe('database foundation', () => {
 
     const reopened = new DatabaseService(databasePath, logger.logger);
     reopened.initialize();
-    expect(reopened.getMigrationVersion()).toBe(8);
+    expect(reopened.getMigrationVersion()).toBe(9);
     expect(reopened.getConnection().prepare('SELECT COUNT(*) AS count FROM rules').get())
       .toEqual({ count: 1 });
     reopened.close();

@@ -11,7 +11,8 @@ export const telegramChannelSyncStateMigration: Migration = {
         account_id INTEGER NOT NULL,
         channel_id INTEGER NOT NULL,
         pts INTEGER NOT NULL DEFAULT 1,
-        sync_status TEXT NOT NULL DEFAULT 'pending',
+        sync_status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (sync_status IN ('pending', 'connecting', 'syncing', 'healthy', 'degraded', 'error', 'disconnected')),
         last_successful_sync_at TEXT,
         last_attempted_sync_at TEXT,
         last_error TEXT,

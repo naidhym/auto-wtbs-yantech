@@ -7,8 +7,11 @@ import { Api, type TelegramClient } from 'telegram';
 import bigInt from 'big-integer';
 import type { UserAuthParams } from 'telegram/client/auth.js';
 import { NewMessageEvent } from 'telegram/events/index.js';
+import type { TelegramEngineStatus } from '../src/user-client/telegram-update.engine.js';
 
 import { createLogger } from '../src/logging/logger.js';
+import { DatabaseService } from '../src/database/database.service.js';
+import { TelegramChannelSyncStateRepository } from '../src/user-client/telegram-channel-sync-state.repository.js';
 import {
   createHeartReactionRequest,
   createTelegramNotificationPayload,
@@ -17,7 +20,7 @@ import {
   evaluateHeartReactionCapability,
   GramJsClientService,
   mapGramJsEvent,
-  reactToSentComment,
+  reactToChannelMessage,
   resolveBroadcastChannel,
   type TelegramClientAdapter,
 } from '../src/user-client/gramjs-client.service.js';
@@ -32,12 +35,29 @@ class FakeTelegramClient implements TelegramClientAdapter {
   public subscribeChannel() {
     return Promise.resolve(() => Promise.resolve());
   }
+  public getEngineStatus(): TelegramEngineStatus {
+    return {
+      accountKey: 'fake-account',
+      connected: this.connected === true,
+      channels: [],
+      syncedChannels: 0,
+      degradedChannels: 0,
+    };
+  }
+  public resynchronizeAll(): Promise<void> {
+    return Promise.resolve();
+  }
+  public markAllDisconnected(): void {
+    this.connected = false;
+  }
   public sendChannelComment() {
     return Promise.resolve({
       messageId: 1,
       resolveMessageLink: () => Promise.resolve('https://t.me/c/1/1'),
-      reactToOwnComment: () => Promise.resolve({ status: 'sent' as const }),
     });
+  }
+  public reactToChannelMessage() {
+    return Promise.resolve({ status: 'sent' as const });
   }
   public sendOperationalNotification() {
     return Promise.resolve();
@@ -327,7 +347,7 @@ describe('GramJS client lifecycle foundation', () => {
         return Promise.resolve({});
       },
     } as unknown as TelegramClient;
-    await expect(reactToSentComment(client, sourcePeer, 77)).resolves.toEqual({
+    await expect(reactToChannelMessage(client, channel, 77)).resolves.toEqual({
       status: 'sent',
     });
     expect(invoked).toHaveLength(2);
@@ -343,11 +363,20 @@ describe('GramJS client lifecycle foundation', () => {
       writeToStdout: false,
     });
     const adapter = new FakeTelegramClient();
+    const databasePath = path.join(logDirectory, 'test.sqlite');
+    const database = new DatabaseService(databasePath, loggerHandle.logger);
+    database.initialize();
+    database.ensureOwner('owner');
+    database.getConnection().prepare(`
+      INSERT INTO accounts (owner_id, label, phone_number, session_key, is_enabled)
+      VALUES (1, 'Account One', '+62123456789', 'account-1', 1)
+    `).run();
     const service = new GramJsClientService(
       {
         accountKey: 'account-1',
         apiId: 12345,
         apiHash: 'test-hash',
+        syncStateRepository: new TelegramChannelSyncStateRepository(database.getConnection()),
       },
       loggerHandle.logger,
       () => adapter,
@@ -374,6 +403,7 @@ describe('GramJS client lifecycle foundation', () => {
     });
     await service.destroy();
     expect(adapter.destroyCalls).toBe(1);
+    database.close();
     loggerHandle.close();
   });
 });

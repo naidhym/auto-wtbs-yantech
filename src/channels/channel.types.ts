@@ -4,7 +4,12 @@ export type ChannelOperationalStatus =
   | 'active'
   | 'disabled'
   | 'error'
-  | 'inaccessible';
+  | 'inaccessible'
+  | 'connecting'
+  | 'syncing'
+  | 'healthy'
+  | 'degraded'
+  | 'disconnected';
 
 export interface ChannelRecord {
   readonly id: number;

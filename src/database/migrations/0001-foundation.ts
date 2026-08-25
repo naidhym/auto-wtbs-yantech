@@ -20,7 +20,7 @@ export const foundationMigration: Migration = {
         telegram_user_id TEXT UNIQUE,
         session_key TEXT NOT NULL UNIQUE,
         status TEXT NOT NULL DEFAULT 'disconnected'
-          CHECK (status IN ('disabled', 'disconnected', 'connecting', 'connected', 'error')),
+          CHECK (status IN ('disabled', 'disconnected', 'connecting', 'connected', 'reconnecting', 'error')),
         is_enabled INTEGER NOT NULL DEFAULT 0 CHECK (is_enabled IN (0, 1)),
         last_connected_at TEXT,
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),

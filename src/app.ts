@@ -35,6 +35,7 @@ import { ReplyTemplateService } from './rules/reply-template.service.js';
 import { RuleRepository } from './rules/rule.repository.js';
 import { RuleService } from './rules/rule.service.js';
 import { TelegramClientRegistry } from './user-client/telegram-client.registry.js';
+import { TelegramChannelSyncStateRepository } from './user-client/telegram-channel-sync-state.repository.js';
 
 export type ApplicationState =
   | 'created'
@@ -121,6 +122,7 @@ export class AutoWtbApplication {
           this.loggerHandle.logger,
         );
         const sessionStore = new AccountSessionStore(this.storagePaths.sessionDirectory);
+        const telegramSyncStates = new TelegramChannelSyncStateRepository(this.database.getConnection());
         this.accountManager = new AccountManagerService(
           accountService,
           sessionStore,
@@ -135,6 +137,7 @@ export class AutoWtbApplication {
               ? {}
               : { apiHash: this.config.telegram.apiHash }),
           },
+          telegramSyncStates,
         );
 
         const channelRepository = new ChannelRepository(this.database.getConnection());

@@ -13,6 +13,7 @@ import {
   createChannelMessageBuilder,
   GramJsClientService,
 } from '../src/user-client/gramjs-client.service.js';
+import { TelegramChannelSyncStateRepository } from '../src/user-client/telegram-channel-sync-state.repository.js';
 
 type SqlRow = Record<string, unknown>;
 
@@ -150,7 +151,11 @@ async function main(): Promise<void> {
     printAssignments(accounts, assignments);
 
     const activeAssignments = assignments.filter(isEffectiveAssignment);
-    const probes = await probeEntities(activeAssignments, config);
+    const probes = await probeEntities(
+      activeAssignments,
+      config,
+      new TelegramChannelSyncStateRepository(database),
+    );
     const diagnostics = activeAssignments.map((assignment) => {
       const entity = probes.get(assignmentKey(assignment)) ?? notAttemptedProbe(assignment);
       const counts = countEvents(assignment, logEvents, databaseEvents);
@@ -256,6 +261,7 @@ function readTable(
 async function probeEntities(
   assignments: readonly AssignmentInfo[],
   config: ReturnType<typeof loadConfig>,
+  syncStates: TelegramChannelSyncStateRepository,
 ): Promise<Map<string, EntityProbe>> {
   const probes = new Map<string, EntityProbe>();
   const silentLogger = pino({ level: 'silent' });
@@ -295,6 +301,7 @@ async function probeEntities(
             apiId: config.telegram.apiId,
             apiHash: config.telegram.apiHash,
             session,
+            syncStateRepository: syncStates,
             silent: true,
             connectionRetries: 1,
             reconnectRetries: 0,

@@ -6,6 +6,7 @@ import { accountReplyTemplatesMigration } from './0005-account-reply-templates.j
 import { autoReplySafetyMigration } from './0006-auto-reply-safety.js';
 import { perAccountDispatchDeduplicationMigration } from './0007-per-account-dispatch-deduplication.js';
 import { accountNotificationTargetMigration } from './0008-account-notification-target.js';
+import { telegramChannelSyncStateMigration } from './0009-telegram-channel-sync-state.js';
 import type { Migration } from './types.js';
 
 export const migrations: readonly Migration[] = [
@@ -17,4 +18,5 @@ export const migrations: readonly Migration[] = [
   autoReplySafetyMigration,
   perAccountDispatchDeduplicationMigration,
   accountNotificationTargetMigration,
+  telegramChannelSyncStateMigration,
 ];

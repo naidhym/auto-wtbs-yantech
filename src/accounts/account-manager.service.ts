@@ -5,6 +5,7 @@ import {
   type TelegramClientStatus,
 } from '../user-client/gramjs-client.service.js';
 import { TelegramClientRegistry } from '../user-client/telegram-client.registry.js';
+import { TelegramChannelSyncStateRepository } from '../user-client/telegram-channel-sync-state.repository.js';
 import { AccountService } from './account.service.js';
 import type { AccountRecord, CreateAccountInput } from './account.types.js';
 import { AccountSessionStore } from './session-store.js';
@@ -70,6 +71,7 @@ export class AccountManagerService {
     private readonly clients: TelegramClientRegistry,
     private readonly logger: AppLogger,
     private readonly options: AccountManagerOptions,
+    private readonly syncStates: TelegramChannelSyncStateRepository,
   ) {}
 
   public addAccount(input: CreateAccountInput): AccountRecord {
@@ -458,7 +460,7 @@ export class AccountManagerService {
         apiId,
         apiHash,
         session,
-        syncStatePath: this.sessions.getChannelSyncStatePath(account.accountKey),
+        syncStateRepository: this.syncStates,
       },
       this.options.clientFactory,
     );

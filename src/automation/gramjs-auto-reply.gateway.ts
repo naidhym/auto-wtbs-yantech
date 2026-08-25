@@ -5,6 +5,7 @@ import type {
   AccountNotificationGateway,
   AutoReplyGateway,
   SentReply,
+  SourceReactionTarget,
 } from './automation.types.js';
 
 export class GramJsAutoReplyGateway implements AutoReplyGateway {
@@ -26,6 +27,14 @@ export class GramJsAutoReplyGateway implements AutoReplyGateway {
   ): Promise<SentReply> {
     const client = this.requireClient(accountKey);
     return client.sendChannelComment(channelIdentifier, sourceMessageId, text);
+  }
+
+  public reactToSourceMessage(
+    accountKey: string,
+    target: SourceReactionTarget,
+  ) {
+    const client = this.requireClient(accountKey);
+    return client.reactToChannelMessage(target.channelIdentifier, target.sourceMessageId);
   }
 
   private requireClient(accountKey: string) {

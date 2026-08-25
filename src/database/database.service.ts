@@ -24,6 +24,7 @@ export const FOUNDATION_TABLES = [
   'reply_templates',
   'rules',
   'settings',
+  'telegram_channel_sync_state',
 ] as const;
 
 export function configureSqliteConnection(connection: DatabaseSync): void {

@@ -3,6 +3,7 @@ export type AccountConnectionStatus =
   | 'disconnected'
   | 'connecting'
   | 'connected'
+  | 'reconnecting'
   | 'error';
 
 export interface AccountRecord {

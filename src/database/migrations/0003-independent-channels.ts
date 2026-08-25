@@ -13,7 +13,7 @@ export const independentChannelsMigration: Migration = {
         title TEXT NOT NULL,
         is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
         status TEXT NOT NULL DEFAULT 'active'
-          CHECK (status IN ('active', 'disabled', 'error', 'inaccessible')),
+          CHECK (status IN ('active', 'disabled', 'error', 'inaccessible', 'connecting', 'syncing', 'healthy', 'degraded', 'disconnected')),
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
@@ -39,7 +39,7 @@ export const independentChannelsMigration: Migration = {
         channel_id INTEGER NOT NULL,
         is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
         status TEXT NOT NULL DEFAULT 'active'
-          CHECK (status IN ('active', 'disabled', 'error', 'inaccessible')),
+          CHECK (status IN ('active', 'disabled', 'error', 'inaccessible', 'connecting', 'syncing', 'healthy', 'degraded', 'disconnected')),
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         UNIQUE (account_id, channel_id),

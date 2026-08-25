@@ -17,7 +17,11 @@ export type ReactionStatus = 'sent' | 'skipped' | 'failed';
 export interface SentReply {
   readonly messageId: number;
   resolveMessageLink(): Promise<string>;
-  reactToOwnComment(): Promise<ReactionAttemptResult>;
+}
+
+export interface SourceReactionTarget {
+  readonly channelIdentifier: string;
+  readonly sourceMessageId: number;
 }
 
 export interface ReactionAttemptResult {
@@ -33,6 +37,10 @@ export interface AutoReplyGateway {
     sourceMessageId: number,
     text: string,
   ): Promise<SentReply>;
+  reactToSourceMessage(
+    accountKey: string,
+    target: SourceReactionTarget,
+  ): Promise<ReactionAttemptResult>;
 }
 
 export type OwnerNotification = {

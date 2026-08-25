@@ -77,7 +77,7 @@ class FakeAutoReplyGateway implements AutoReplyGateway {
   public reactions: Array<{
     accountKey: string;
     channelIdentifier: string;
-    replyMessageId: number;
+    sourceMessageId: number;
   }> = [];
   public reactionMode: 'sent' | 'skipped' | 'failed' = 'sent';
   public linkMode: 'available' | 'unavailable' = 'available';
@@ -103,12 +103,11 @@ class FakeAutoReplyGateway implements AutoReplyGateway {
       resolveMessageLink: () => this.linkMode === 'available'
         ? Promise.resolve(`https://t.me/c/900/${messageId}`)
         : Promise.reject(new Error('LINK_UNAVAILABLE')),
-      reactToOwnComment: () => this.reactToOwnComment(accountKey, channelIdentifier, messageId),
     });
   }
 
-  private reactToOwnComment(accountKey: string, channelIdentifier: string, replyMessageId: number) {
-    this.reactions.push({ accountKey, channelIdentifier, replyMessageId });
+  public reactToSourceMessage(accountKey: string, target: { channelIdentifier: string; sourceMessageId: number }) {
+    this.reactions.push({ accountKey, channelIdentifier: target.channelIdentifier, sourceMessageId: target.sourceMessageId });
     if (this.reactionMode === 'skipped') {
       return Promise.resolve({ status: 'skipped' as const, reason: 'chat_reactions_none' });
     }
@@ -317,7 +316,7 @@ describe('M5 auto reply and safety', () => {
     expect(harness.telegram.reactions).toEqual([{
       accountKey: ACCOUNT_A,
       channelIdentifier: '@channel_one',
-      replyMessageId: 5001,
+      sourceMessageId: 115,
     }]);
     expect(harness.notifier.notifications).toContainEqual({
       accountKey: ACCOUNT_A,
@@ -336,7 +335,7 @@ describe('M5 auto reply and safety', () => {
     harness.close();
   });
 
-  it('reacts every eligible account to its own new comment, never to the source post', async () => {
+  it('reacts every eligible account to the original source post independently', async () => {
     const harness = createHarness();
     harness.connection.prepare('UPDATE account_channels SET is_enabled = 1 WHERE id IN (2, 4)').run();
     harness.settings.setAutoReaction(ACCOUNT_A, true);
@@ -347,9 +346,9 @@ describe('M5 auto reply and safety', () => {
     await harness.process(1, 1, { text: 'bucin', sourceMessageId: 117 });
 
     expect(harness.telegram.reactions).toEqual([
-      { accountKey: ACCOUNT_A, channelIdentifier: '@channel_one', replyMessageId: 24 },
-      { accountKey: ACCOUNT_B, channelIdentifier: '@channel_one', replyMessageId: 25 },
-      { accountKey: ACCOUNT_C, channelIdentifier: '@channel_one', replyMessageId: 26 },
+      { accountKey: ACCOUNT_A, channelIdentifier: '@channel_one', sourceMessageId: 117 },
+      { accountKey: ACCOUNT_B, channelIdentifier: '@channel_one', sourceMessageId: 117 },
+      { accountKey: ACCOUNT_C, channelIdentifier: '@channel_one', sourceMessageId: 117 },
     ]);
     expect(harness.connection.prepare(`
       SELECT source_message_id, reply_message_id, reaction_status

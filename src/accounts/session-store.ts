@@ -21,10 +21,6 @@ export class AccountSessionStore {
     return path.join(this.getAccountDirectory(accountKey), SESSION_FILE_NAME);
   }
 
-  public getChannelSyncStatePath(accountKey: string): string {
-    return path.join(this.getAccountDirectory(accountKey), 'telegram-channel-sync-state.json');
-  }
-
   public has(accountKey: string): boolean {
     return fs.existsSync(this.getSessionPath(accountKey));
   }

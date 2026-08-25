@@ -1,10 +1,19 @@
 import type { DatabaseSync } from 'node:sqlite';
 
+export type TelegramChannelSyncStatus =
+  | 'pending'
+  | 'connecting'
+  | 'syncing'
+  | 'healthy'
+  | 'degraded'
+  | 'error'
+  | 'disconnected';
+
 export interface TelegramChannelSyncStateRecord {
   readonly accountId: number;
   readonly channelId: number;
   readonly pts: number;
-  readonly syncStatus: 'pending' | 'healthy' | 'recovering' | 'error';
+  readonly syncStatus: TelegramChannelSyncStatus;
   readonly lastSuccessfulSyncAt?: string;
   readonly lastAttemptedSyncAt?: string;
   readonly lastError?: string;
@@ -50,17 +59,12 @@ export class TelegramChannelSyncStateRepository {
     return this.require(accountId, channelId);
   }
 
-  public markRecovering(accountId: number, channelId: number): TelegramChannelSyncStateRecord {
-    this.ensure(accountId, channelId);
-    this.database.prepare(`
-      UPDATE telegram_channel_sync_state
-      SET sync_status = 'recovering',
-          last_attempted_sync_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-          last_error = NULL,
-          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE account_id = ? AND channel_id = ?
-    `).run(accountId, channelId);
-    return this.require(accountId, channelId);
+  public markConnecting(accountId: number, channelId: number): TelegramChannelSyncStateRecord {
+    return this.updateStatus(accountId, channelId, 'connecting');
+  }
+
+  public markSyncing(accountId: number, channelId: number): TelegramChannelSyncStateRecord {
+    return this.updateStatus(accountId, channelId, 'syncing');
   }
 
   public markHealthy(accountId: number, channelId: number, pts: number): TelegramChannelSyncStateRecord {
@@ -78,22 +82,53 @@ export class TelegramChannelSyncStateRepository {
     return this.require(accountId, channelId);
   }
 
+  public markDegraded(accountId: number, channelId: number, message: string): TelegramChannelSyncStateRecord {
+    return this.updateStatus(accountId, channelId, 'degraded', message);
+  }
+
+  public markDisconnected(accountId: number, channelId: number, message?: string): TelegramChannelSyncStateRecord {
+    return this.updateStatus(accountId, channelId, 'disconnected', message);
+  }
+
   public markError(accountId: number, channelId: number, message: string): TelegramChannelSyncStateRecord {
+    return this.updateStatus(accountId, channelId, 'error', message);
+  }
+
+  public reset(accountId: number, channelId: number): TelegramChannelSyncStateRecord {
     this.ensure(accountId, channelId);
     this.database.prepare(`
       UPDATE telegram_channel_sync_state
-      SET sync_status = 'error',
+      SET pts = 1,
+          sync_status = 'pending',
           last_attempted_sync_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-          last_error = ?,
+          last_error = NULL,
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE account_id = ? AND channel_id = ?
-    `).run(message, accountId, channelId);
+    `).run(accountId, channelId);
     return this.require(accountId, channelId);
   }
 
   public remove(accountId: number, channelId: number): void {
     this.database.prepare('DELETE FROM telegram_channel_sync_state WHERE account_id = ? AND channel_id = ?')
       .run(accountId, channelId);
+  }
+
+  private updateStatus(
+    accountId: number,
+    channelId: number,
+    syncStatus: TelegramChannelSyncStatus,
+    message?: string,
+  ): TelegramChannelSyncStateRecord {
+    this.ensure(accountId, channelId);
+    this.database.prepare(`
+      UPDATE telegram_channel_sync_state
+      SET sync_status = ?,
+          last_attempted_sync_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+          last_error = ?,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE account_id = ? AND channel_id = ?
+    `).run(syncStatus, message ?? null, accountId, channelId);
+    return this.require(accountId, channelId);
   }
 
   private require(accountId: number, channelId: number): TelegramChannelSyncStateRecord {

@@ -17,6 +17,8 @@ import type {
   TelegramClientFactory,
 } from '../src/user-client/gramjs-client.service.js';
 import { TelegramClientRegistry } from '../src/user-client/telegram-client.registry.js';
+import { TelegramChannelSyncStateRepository } from '../src/user-client/telegram-channel-sync-state.repository.js';
+import type { TelegramEngineStatus } from '../src/user-client/telegram-update.engine.js';
 
 interface ClientBehavior {
   readonly connectError?: boolean;
@@ -36,13 +38,35 @@ class MockTelegramClient implements TelegramClientAdapter {
     return Promise.resolve(() => Promise.resolve());
   }
 
+  public getEngineStatus(): TelegramEngineStatus {
+    return {
+      accountKey: this.accountKey,
+      connected: this.connected === true,
+      channels: [],
+      syncedChannels: 0,
+      degradedChannels: 0,
+    };
+  }
+
+  public resynchronizeAll(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  public markAllDisconnected(): void {
+    this.connected = false;
+  }
+
   public sendChannelComment() {
     return Promise.resolve({
       messageId: 1,
       resolveMessageLink: () => Promise.resolve('https://t.me/c/1/1'),
-      reactToOwnComment: () => Promise.resolve({ status: 'sent' as const }),
     });
   }
+
+  public reactToChannelMessage() {
+    return Promise.resolve({ status: 'sent' as const });
+  }
+
   public sendOperationalNotification() {
     return Promise.resolve();
   }
@@ -283,13 +307,14 @@ function createHarness(
     return client;
   };
   const registry = new TelegramClientRegistry(logger.logger);
+  const syncStates = new TelegramChannelSyncStateRepository(database.getConnection());
   const makeManager = (clientRegistry: TelegramClientRegistry) =>
     new AccountManagerService(service, sessions, clientRegistry, logger.logger, {
       apiId: 12345,
       apiHash: 'not-a-real-api-hash',
       loginTimeoutMs,
       clientFactory: factory,
-    });
+    }, syncStates);
   const manager = makeManager(registry);
 
   return {

@@ -10,8 +10,8 @@ import type {
 } from '../channels/channel.types.js';
 import type { TelegramIncomingMessage, TelegramSenderDisplayName } from '../rules/rule.types.js';
 import { errorReason, type AppLogger } from '../logging/logger.js';
-import { TelegramUpdateEngine } from './telegram-update.engine.js';
-import { TelegramChannelSyncStateStore } from './telegram-channel-sync-state.store.js';
+import { TelegramUpdateEngine, type TelegramEngineStatus } from './telegram-update.engine.js';
+import { TelegramChannelSyncStateRepository } from './telegram-channel-sync-state.repository.js';
 
 export type TelegramClientState =
   | 'disconnected'
@@ -24,7 +24,6 @@ export type TelegramClientState =
 export interface SentTelegramComment {
   readonly messageId: number;
   resolveMessageLink(): Promise<string>;
-  reactToOwnComment(): Promise<TelegramReactionResult>;
 }
 
 export interface TelegramReactionResult {
@@ -49,6 +48,9 @@ export interface TelegramClientAdapter {
   checkAuthorization(): Promise<boolean>;
   saveSession(): string;
   getTelegramUserId(): Promise<string | undefined>;
+  getEngineStatus(): TelegramEngineStatus;
+  resynchronizeAll(reason?: 'startup' | 'reconnect'): Promise<void>;
+  markAllDisconnected(reason?: string): void;
   resolveChannel(identifier: string): Promise<ResolvedTelegramChannel>;
   subscribeChannel(
     identifier: string,
@@ -61,6 +63,10 @@ export interface TelegramClientAdapter {
     sourceMessageId: number,
     text: string,
   ): Promise<SentTelegramComment>;
+  reactToChannelMessage(
+    identifier: string,
+    sourceMessageId: number,
+  ): Promise<TelegramReactionResult>;
   sendOperationalNotification(
     target: string,
     notification: TelegramOperationalNotification,
@@ -73,7 +79,7 @@ export interface GramJsClientOptions {
   readonly apiId: number;
   readonly apiHash: string;
   readonly session?: string;
-  readonly syncStatePath?: string;
+  readonly syncStateRepository: TelegramChannelSyncStateRepository;
   readonly connectionRetries?: number;
   readonly reconnectRetries?: number;
   /** Used only by read-only diagnostics so GramJS transport chatter does not pollute terminal output. */
@@ -86,6 +92,7 @@ export interface TelegramClientStatus {
   readonly connected: boolean;
   readonly lastError?: string;
   readonly updatedAt: string;
+  readonly engine: TelegramEngineStatus;
 }
 
 export type TelegramClientFactory = (
@@ -116,8 +123,12 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
   if (options.silent === true) {
     client.setLogLevel(LogLevel.NONE);
   }
-  const syncStateStore = new TelegramChannelSyncStateStore(options.syncStatePath ?? '.');
-  const engine = new TelegramUpdateEngine(options.accountKey, client, syncStateStore, logger ?? consoleLoggerShim);
+  const engine = new TelegramUpdateEngine(
+    options.accountKey,
+    client,
+    options.syncStateRepository,
+    logger ?? consoleLoggerShim,
+  );
   let backgroundErrorHandler: (error: unknown) => Promise<void> = () => Promise.resolve();
   let listenerRegistrationCount = 0;
   const reportBackgroundError = async (error: unknown): Promise<void> => {
@@ -156,6 +167,15 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
     async getTelegramUserId(): Promise<string | undefined> {
       const user = await client.getMe();
       return user.id?.toString();
+    },
+    getEngineStatus(): TelegramEngineStatus {
+      return engine.getStatus();
+    },
+    async resynchronizeAll(reason: 'startup' | 'reconnect' = 'reconnect'): Promise<void> {
+      await engine.resynchronizeAll(reason);
+    },
+    markAllDisconnected(reason = 'telegram_client_disconnected'): void {
+      engine.markAllDisconnected(reason);
     },
     async resolveChannel(identifier): Promise<ResolvedTelegramChannel> {
       const entity = await resolveBroadcastChannel(client, identifier);
@@ -230,13 +250,11 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
       return {
         messageId: sent.id,
         resolveMessageLink: () => buildTelegramMessageLink(sent),
-        reactToOwnComment: async () => {
-          if (sent.peerId === undefined) {
-            return { status: 'skipped', reason: 'reply_peer_unavailable' };
-          }
-          return reactToSentComment(client, sent.peerId, sent.id);
-        },
       };
+    },
+    async reactToChannelMessage(identifier, sourceMessageId) {
+      const entity = await resolveBroadcastChannel(client, identifier);
+      return reactToChannelMessage(client, entity, sourceMessageId);
     },
     async sendOperationalNotification(target, notification) {
       await client.sendMessage(target, createTelegramNotificationPayload(notification));
@@ -370,6 +388,16 @@ export class GramJsClientService {
     });
   }
 
+  public reactToChannelMessage(
+    identifier: string,
+    sourceMessageId: number,
+  ): Promise<TelegramReactionResult> {
+    return this.enqueue(async () => {
+      if (!this.getStatus().connected) throw new Error('Telegram client is not connected');
+      return this.client.reactToChannelMessage(identifier, sourceMessageId);
+    });
+  }
+
   public sendOperationalNotification(
     target: string,
     notification: TelegramOperationalNotification,
@@ -406,6 +434,7 @@ export class GramJsClientService {
       connected: this.client.connected === true && this.state === 'connected',
       ...(this.lastError === undefined ? {} : { lastError: this.lastError }),
       updatedAt: this.updatedAt,
+      engine: this.client.getEngineStatus(),
     };
   }
 
@@ -426,6 +455,7 @@ export class GramJsClientService {
       }
 
       this.lastError = undefined;
+      await this.client.resynchronizeAll(transitionState === 'connecting' ? 'startup' : 'reconnect');
       this.setState('connected');
       this.logger.info(
         {
@@ -461,6 +491,7 @@ export class GramJsClientService {
 
     try {
       await this.client.disconnect();
+      this.client.markAllDisconnected();
       this.lastError = undefined;
       this.setState('disconnected');
 
@@ -593,19 +624,15 @@ export function createHeartReactionRequest(
   });
 }
 
-export async function reactToSentComment(
+export async function reactToChannelMessage(
   client: TelegramClient,
-  replyPeer: Api.TypeEntityLike,
-  replyMessageId: number,
+  channel: Api.Channel,
+  sourceMessageId: number,
 ): Promise<TelegramReactionResult> {
-  if (!Number.isSafeInteger(replyMessageId) || replyMessageId < 1) {
-    throw new Error('Reply message ID is invalid');
+  if (!Number.isSafeInteger(sourceMessageId) || sourceMessageId < 1) {
+    throw new Error('Source channel message ID is invalid');
   }
-  const entity = await client.getEntity(replyPeer);
-  if (!(entity instanceof Api.Channel)) {
-    return { status: 'skipped', reason: 'reply_peer_not_channel' };
-  }
-  const fullChannel = await client.invoke(new Api.channels.GetFullChannel({ channel: entity }));
+  const fullChannel = await client.invoke(new Api.channels.GetFullChannel({ channel }));
   const capability = evaluateHeartReactionCapability(fullChannel.fullChat.availableReactions);
   if (!capability.supported) {
     return {
@@ -613,8 +640,8 @@ export async function reactToSentComment(
       reason: capability.reason ?? 'heart_reaction_unavailable',
     };
   }
-  const peer = await client.getInputEntity(replyPeer);
-  await client.invoke(createHeartReactionRequest(peer, replyMessageId));
+  const peer = await client.getInputEntity(channel);
+  await client.invoke(createHeartReactionRequest(peer, sourceMessageId));
   return { status: 'sent' };
 }
 

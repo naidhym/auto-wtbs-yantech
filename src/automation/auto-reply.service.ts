@@ -443,14 +443,16 @@ export class AutoReplyService implements ChannelMessageProcessor {
       );
     }
 
-    const reaction = await this.performReaction(
-      currentSettings,
-      claim.sourceMessageId,
-      input.channel.id,
-      reply,
-      claim,
-      selected.template.id,
-    );
+      const reaction = await this.performReaction(
+        currentSettings,
+        sourceChannelIdentifier,
+        claim.sourceMessageId,
+        input.channel.id,
+        reply,
+        claim,
+        selected.template.id,
+      );
+
     this.dispatches.setReactionStatus(claim.id, reaction.status, reaction.reason);
     this.record(
       'reply_sent',
@@ -493,6 +495,7 @@ export class AutoReplyService implements ChannelMessageProcessor {
 
   private async performReaction(
     settings: AccountAutomationSettings,
+    sourceChannelIdentifier: string,
     sourceMessageId: number,
     channelId: number,
     reply: SentReply,
@@ -517,8 +520,10 @@ export class AutoReplyService implements ChannelMessageProcessor {
       return { status: 'skipped', reason: 'auto_reaction_disabled' };
     }
     try {
-      // The reply object retains its actual peer, including a linked discussion chat.
-      const result = await reply.reactToOwnComment();
+      const result = await this.telegram.reactToSourceMessage(settings.accountKey, {
+        channelIdentifier: sourceChannelIdentifier,
+        sourceMessageId,
+      });
       if (result.status === 'skipped') {
         const reason = result.reason ?? 'heart_reaction_unavailable';
         this.record(
