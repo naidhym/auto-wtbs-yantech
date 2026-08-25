@@ -676,14 +676,28 @@ export async function mapGramJsEvent(
   ]);
   const senderDisplayName = senderDisplayNames[0]?.value;
 
+  const resolvedText = resolveIncomingMessageText(message);
+
   return {
     chatKind,
     sourceMessageId: message.id,
-    text: message.text ?? '',
+    text: resolvedText,
     ...(senderDisplayName === undefined ? {} : { senderDisplayName }),
     ...(senderDisplayNames.length === 0 ? {} : { senderDisplayNames }),
     ...(sameChannel ? { telegramChannelId: subscribedEntity.id.toString() } : {}),
   };
+}
+
+function resolveIncomingMessageText(message: Api.Message): string {
+  const rendered = message.text;
+  if (typeof rendered === 'string' && rendered.length > 0) {
+    return rendered;
+  }
+  const raw = message.rawText;
+  if (typeof raw === 'string' && raw.length > 0) {
+    return raw;
+  }
+  return message.message ?? '';
 }
 
 function diagnosticFields(

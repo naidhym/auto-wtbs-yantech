@@ -64,6 +64,26 @@ export class GlobalDetectionService {
 
     const configuration = this.keywords.getConfiguration();
     const text = normalizeGlobalMatchText(message.text);
+    this.logger.info(
+      {
+        account: assignment.accountKey,
+        channel: channel.id,
+        action: 'diagnostic_global_detection_input',
+        status: 'evaluating',
+        sourceMessageId: message.sourceMessageId,
+        hasTextField: typeof message.text === 'string',
+        textLength: message.text.length,
+        normalizedTextLength: text.length,
+        textEmpty: text.length === 0,
+        triggerKeywordCount: configuration.triggerKeywords.length,
+        triggerCandidates: configuration.triggerKeywords
+          .map((keyword) => normalizeGlobalMatchText(keyword))
+          .filter((keyword) => keyword.length > 0),
+        excludeKeywordCount: configuration.excludeKeywords.length,
+        cleanupPatternCount: configuration.cleanupPatterns.length,
+      },
+      'Diagnostic global detection input evaluated',
+    );
     if (!configuration.enabled) {
       this.logDiagnostic(input, false, 'global_detection_disabled');
       return undefined;

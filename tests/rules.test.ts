@@ -2,8 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import bigInt from 'big-integer';
 
 import { describe, expect, it } from 'vitest';
+import { Api } from 'telegram';
+import { NewMessageEvent } from 'telegram/events/index.js';
 
 import type { ChannelAssignmentRecord, ChannelRecord } from '../src/channels/channel.types.js';
 import { DatabaseService } from '../src/database/database.service.js';
@@ -13,6 +16,7 @@ import {
   GlobalDetectionService,
   normalizeGlobalMatchText,
 } from '../src/rules/global-detection.service.js';
+import { mapGramJsEvent } from '../src/user-client/gramjs-client.service.js';
 import {
   GlobalKeywordService,
   parseCommaSeparatedKeywords,
@@ -62,6 +66,41 @@ describe('M4 global keywords and channel-only detection', () => {
       error_reason: 'trigger_keyword:bucin',
     });
     expect(JSON.parse(row.metadata)).toEqual({ matchedTrigger: 'bucin' });
+    harness.close();
+  });
+
+  it('matches bucin when GramJS channel posts expose rawText but text is empty', async () => {
+    const harness = createHarness();
+    harness.keywords.setTriggerKeywords('bucin, mensive');
+    const channel = new Api.Channel({
+      id: bigInt(harness.channel.telegramChannelId),
+      title: harness.channel.title,
+      photo: new Api.ChatPhotoEmpty(),
+      date: 0,
+      broadcast: true,
+    });
+    const message = new Api.Message({
+      out: false,
+      mentioned: false,
+      mediaUnread: false,
+      silent: false,
+      post: true,
+      id: 96,
+      peerId: new Api.PeerChannel({ channelId: bigInt(harness.channel.telegramChannelId) }),
+      message: 'bucin',
+      date: 0,
+    });
+    const update = new Api.UpdateNewChannelMessage({ message, pts: 1, ptsCount: 1 });
+    const mapped = await mapGramJsEvent(new NewMessageEvent(message, update), channel);
+
+    expect(message.text).toBe('');
+    expect(message.rawText).toBe('bucin');
+    expect(mapped.text).toBe('bucin');
+    expect(harness.detector.process({
+      assignment: harness.assignment,
+      channel: harness.channel,
+      message: mapped,
+    })).toEqual({ type: 'MATCH', matchedTrigger: 'bucin' });
     harness.close();
   });
 
