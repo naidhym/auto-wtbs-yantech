@@ -2,15 +2,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { Api, type TelegramClient } from 'telegram';
 import bigInt from 'big-integer';
 import type { UserAuthParams } from 'telegram/client/auth.js';
-import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
+import { NewMessageEvent } from 'telegram/events/index.js';
 
 import { createLogger } from '../src/logging/logger.js';
 import {
-  consumePendingChannelTooLongUpdate,
   createHeartReactionRequest,
   createTelegramNotificationPayload,
   createTelegramMessageLink,
@@ -19,8 +18,6 @@ import {
   GramJsClientService,
   mapGramJsEvent,
   reactToSentComment,
-  recoverChannelUpdateState,
-  rememberPendingChannelTooLongUpdate,
   resolveBroadcastChannel,
   type TelegramClientAdapter,
 } from '../src/user-client/gramjs-client.service.js';
@@ -213,169 +210,6 @@ describe('GramJS client lifecycle foundation', () => {
     expect(second.filter(firstEvent)).toBeUndefined();
     expect(first.filter(secondEvent)).toBeUndefined();
     expect(second.filter(secondEvent)).toBeDefined();
-  });
-
-  it('recovers a broadcast channel gap with its access-hash-backed InputChannel', async () => {
-    const entity = new Api.Channel({
-      id: bigInt('333333333'),
-      accessHash: bigInt('987654321'),
-      title: 'Gap Recovery Test',
-      photo: new Api.ChatPhotoEmpty(),
-      date: 0,
-      broadcast: true,
-    });
-    const invoke = vi.fn().mockResolvedValue(new Api.updates.ChannelDifferenceEmpty({ pts: 48 }));
-
-    await recoverChannelUpdateState(
-      { invoke } as Pick<TelegramClient, 'invoke'>,
-      entity,
-      new Api.UpdateChannelTooLong({ channelId: entity.id, pts: 47 }),
-    );
-
-    expect(invoke).toHaveBeenCalledTimes(1);
-    const [request] = invoke.mock.calls[0] as [Api.updates.GetChannelDifference];
-    expect(request).toBeInstanceOf(Api.updates.GetChannelDifference);
-    expect(request.channel).toBeInstanceOf(Api.InputChannel);
-    expect((request.channel as Api.InputChannel).channelId.toString()).toBe('333333333');
-    expect((request.channel as Api.InputChannel).accessHash?.toString()).toBe('987654321');
-    expect(request.pts).toBe(47);
-    expect(request.limit).toBe(100);
-    expect(request.force).toBe(true);
-
-    await expect(recoverChannelUpdateState(
-      { invoke } as Pick<TelegramClient, 'invoke'>,
-      entity,
-      new Api.UpdateChannelTooLong({ channelId: bigInt('444444444'), pts: 48 }),
-    )).resolves.toBe(false);
-    expect(invoke).toHaveBeenCalledTimes(1);
-  });
-
-  it('replays recovered channel messages until the channel gap is closed', async () => {
-    const entity = new Api.Channel({
-      id: bigInt('333333334'),
-      accessHash: bigInt('987654322'),
-      title: 'Gap Replay Test',
-      photo: new Api.ChatPhotoEmpty(),
-      date: 0,
-      broadcast: true,
-    });
-    const recoveredMessage = new Api.Message({
-      out: false,
-      mentioned: false,
-      mediaUnread: false,
-      silent: false,
-      post: true,
-      id: 91,
-      peerId: new Api.PeerChannel({ channelId: entity.id }),
-      message: 'recovered post',
-      date: 0,
-    });
-    const invoke = vi.fn()
-      .mockResolvedValueOnce(new Api.updates.ChannelDifference({
-        final: true,
-        pts: 50,
-        timeout: 0,
-        newMessages: [recoveredMessage],
-        otherUpdates: [],
-        chats: [],
-        users: [],
-      }));
-    const addEventHandler = vi.fn();
-    const getMe = vi.fn().mockResolvedValue(new Api.User({ id: bigInt('1'), firstName: 'Test' }));
-    const fakeClient = {
-      invoke,
-      addEventHandler,
-      getMe,
-      _selfInputPeer: new Api.InputPeerUser({ userId: bigInt('1'), accessHash: bigInt('1') }),
-      _eventBuilders: [],
-      _entityCache: { add: vi.fn() },
-      session: { processEntities: vi.fn() },
-      _errorHandler: undefined,
-      _log: { canSend: vi.fn().mockReturnValue(false), error: vi.fn() },
-    } as unknown as TelegramClient;
-    const received: NewMessageEvent[] = [];
-    const builder = createChannelMessageBuilder(entity.id.toString());
-    await builder.resolve(fakeClient);
-    addEventHandler(() => undefined, builder);
-    fakeClient._eventBuilders.push([builder, (event: NewMessageEvent) => {
-      received.push(event);
-      return Promise.resolve();
-    }] as never);
-
-    await expect(recoverChannelUpdateState(
-      fakeClient,
-      entity,
-      new Api.UpdateChannelTooLong({ channelId: entity.id, pts: 49 }),
-    )).resolves.toBe(true);
-
-    expect(invoke).toHaveBeenCalledTimes(1);
-    expect(received).toHaveLength(1);
-    expect(received[0]?.message.id).toBe(91);
-    expect(received[0]?.originalUpdate).toBeInstanceOf(Api.UpdateNewChannelMessage);
-  });
-
-  it('recovers an UpdateChannelTooLong that arrived before the channel subscribed', async () => {
-    const channelId = bigInt('777777777');
-    const entity = new Api.Channel({
-      id: channelId,
-      accessHash: bigInt('111111111'),
-      title: 'Pre Subscription Gap',
-      photo: new Api.ChatPhotoEmpty(),
-      date: 0,
-      broadcast: true,
-    });
-    const pending = new Map<string, Api.UpdateChannelTooLong>();
-    const recoveredMessage = new Api.Message({
-      out: false,
-      mentioned: false,
-      mediaUnread: false,
-      silent: false,
-      post: true,
-      id: 101,
-      peerId: new Api.PeerChannel({ channelId }),
-      message: 'late recovered post',
-      date: 0,
-    });
-    const invoke = vi.fn().mockResolvedValue(new Api.updates.ChannelDifference({
-      final: true,
-      pts: 12,
-      timeout: 0,
-      newMessages: [recoveredMessage],
-      otherUpdates: [],
-      chats: [],
-      users: [],
-    }));
-    const fakeClient = {
-      invoke,
-      getMe: vi.fn().mockResolvedValue(new Api.User({ id: bigInt('1'), firstName: 'Test' })),
-      _selfInputPeer: new Api.InputPeerUser({ userId: bigInt('1'), accessHash: bigInt('1') }),
-      _eventBuilders: [] as Array<[NewMessage, (event: NewMessageEvent) => Promise<void>]>,
-      _entityCache: { add: vi.fn() },
-      session: { processEntities: vi.fn() },
-      _errorHandler: undefined,
-      _log: { canSend: vi.fn().mockReturnValue(false), error: vi.fn() },
-    } as unknown as TelegramClient;
-    const received: NewMessageEvent[] = [];
-    const builder = createChannelMessageBuilder(channelId.toString());
-    await builder.resolve(fakeClient);
-    fakeClient._eventBuilders.push([builder, (event: NewMessageEvent) => {
-      received.push(event);
-      return Promise.resolve();
-    }]);
-
-    rememberPendingChannelTooLongUpdate(
-      pending,
-      new Api.UpdateChannelTooLong({ channelId, pts: 11 }),
-    );
-    const pendingUpdate = consumePendingChannelTooLongUpdate(pending, channelId.toString());
-    expect(pendingUpdate).toBeInstanceOf(Api.UpdateChannelTooLong);
-
-    await expect(recoverChannelUpdateState(fakeClient, entity, pendingUpdate)).resolves.toBe(true);
-
-    expect(invoke).toHaveBeenCalledTimes(1);
-    expect(received).toHaveLength(1);
-    expect(received[0]?.message.id).toBe(101);
-    expect(pending.size).toBe(0);
   });
 
   it('hydrates a private numeric channel from dialogs and rejects megagroups', async () => {

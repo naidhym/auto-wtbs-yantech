@@ -458,6 +458,7 @@ export class AccountManagerService {
         apiId,
         apiHash,
         session,
+        syncStatePath: this.sessions.getChannelSyncStatePath(account.accountKey),
       },
       this.options.clientFactory,
     );

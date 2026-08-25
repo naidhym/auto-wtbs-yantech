@@ -1,9 +1,8 @@
-import { Api, TelegramClient, utils } from 'telegram';
+import { Api, TelegramClient } from 'telegram';
 import type { UserAuthParams } from 'telegram/client/auth.js';
-import { NewMessage, NewMessageEvent, Raw } from 'telegram/events/index.js';
+import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 import { LogLevel } from 'telegram/extensions/Logger.js';
 import { StringSession } from 'telegram/sessions/index.js';
-import { _handleUpdate } from 'telegram/client/updates.js';
 
 import type {
   ResolvedTelegramChannel,
@@ -11,6 +10,8 @@ import type {
 } from '../channels/channel.types.js';
 import type { TelegramIncomingMessage, TelegramSenderDisplayName } from '../rules/rule.types.js';
 import { errorReason, type AppLogger } from '../logging/logger.js';
+import { TelegramUpdateEngine } from './telegram-update.engine.js';
+import { TelegramChannelSyncStateStore } from './telegram-channel-sync-state.store.js';
 
 export type TelegramClientState =
   | 'disconnected'
@@ -72,6 +73,7 @@ export interface GramJsClientOptions {
   readonly apiId: number;
   readonly apiHash: string;
   readonly session?: string;
+  readonly syncStatePath?: string;
   readonly connectionRetries?: number;
   readonly reconnectRetries?: number;
   /** Used only by read-only diagnostics so GramJS transport chatter does not pollute terminal output. */
@@ -92,7 +94,11 @@ export type TelegramClientFactory = (
   nativeClientInstanceId?: string,
 ) => TelegramClientAdapter;
 
-let nextDiagnosticCorrelationId = 1;
+const consoleLoggerShim = {
+  info: () => undefined,
+  warn: () => undefined,
+  error: () => undefined,
+} as unknown as AppLogger;
 
 const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClientInstanceId = 'unavailable') => {
   const session = new StringSession(options.session ?? '');
@@ -110,9 +116,10 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
   if (options.silent === true) {
     client.setLogLevel(LogLevel.NONE);
   }
+  const syncStateStore = new TelegramChannelSyncStateStore(options.syncStatePath ?? '.');
+  const engine = new TelegramUpdateEngine(options.accountKey, client, syncStateStore, logger ?? consoleLoggerShim);
   let backgroundErrorHandler: (error: unknown) => Promise<void> = () => Promise.resolve();
   let listenerRegistrationCount = 0;
-  const pendingChannelTooLongUpdates = new Map<string, Api.UpdateChannelTooLong>();
   const reportBackgroundError = async (error: unknown): Promise<void> => {
     try {
       await backgroundErrorHandler(error);
@@ -123,41 +130,6 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
     }
   };
   client.onError = reportBackgroundError;
-  const nativeUpdateObserver = (update: unknown): void => {
-    if (!(update instanceof Api.UpdateNewChannelMessage) || !(update.message instanceof Api.Message)) {
-      return;
-    }
-    const peer = update.message.peerId;
-    logger?.info(
-      {
-        account: options.accountKey,
-        action: 'diagnostic_native_telegram_update',
-        status: 'received',
-        nativeClientInstanceId,
-        updateType: update.constructor.name,
-        rawPeerType: peer?.constructor.name,
-        ...(peer instanceof Api.PeerChannel ? { actualTelegramChannelId: peer.channelId.toString() } : {}),
-        sourceMessageId: update.message.id,
-        post: update.message.post === true,
-      },
-      'Native Telegram channel update observed before NewMessage filtering',
-    );
-  };
-  client.addEventHandler(nativeUpdateObserver, new Raw({ types: [Api.UpdateNewChannelMessage] }));
-  client.addEventHandler((update: unknown) => {
-    rememberPendingChannelTooLongUpdate(pendingChannelTooLongUpdates, update);
-  }, new Raw({ types: [Api.UpdateChannelTooLong] }));
-  logger?.info(
-    {
-      account: options.accountKey,
-      action: 'diagnostic_native_update_observer_registration',
-      status: 'registered',
-      nativeClientInstanceId,
-      eventBuilderType: 'Raw',
-      eventBuilderFilter: 'Api.UpdateNewChannelMessage',
-    },
-    'Native Telegram update observer registered before NewMessage filtering',
-  );
 
   return {
     get connected(): boolean | undefined {
@@ -209,187 +181,43 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
       onMessage,
       onError,
     ): Promise<() => Promise<void>> {
-      let entity: Api.Channel;
-      try {
-        entity = await resolveBroadcastChannel(client, identifier);
-      } catch (error) {
-        logger?.warn(
-          diagnosticFields(context, nativeClientInstanceId, {
-            action: 'diagnostic_telegram_entity_resolution',
-            status: 'failed',
-            errorName: error instanceof Error ? error.name : 'UnknownError',
-            errorMessage: errorReason(error),
-          }),
-          'Telegram entity resolution diagnostic failed',
-        );
-        throw error;
-      }
-      const diagnostic = (
-        action: string,
-        status: string,
-        reason: string,
-        actualTelegramChannelId?: string,
-        sourceMessageId?: number,
-        extra: Record<string, unknown> = {},
-      ): void => {
-        logger?.info(
-          {
-            account: context.accountSessionKey,
-            channel: context.channelId,
-            action,
-            status,
-            reason,
-            ...diagnosticFields(context, nativeClientInstanceId),
-            ...(actualTelegramChannelId === undefined ? {} : { actualTelegramChannelId }),
-            nativeClientInstanceId,
-            ...(sourceMessageId === undefined ? {} : { sourceMessageId }),
-            ...extra,
-          },
-          'Telegram listener diagnostic',
-        );
-      };
-      diagnostic(
-        'diagnostic_telegram_entity_resolution',
-        entity.id.toString() === context.expectedTelegramChannelId ? 'success' : 'mismatch',
-        entity.id.toString() === context.expectedTelegramChannelId
-          ? 'broadcast_channel_resolved'
-          : 'resolved_entity_id_differs_from_expected_channel_id',
-        entity.id.toString(),
-        undefined,
-        {
-          usernameUsedForResolution: context.usernameUsedForResolution,
-          resolvedEntityType: entity.constructor.name,
-          expectedMatchesActual: entity.id.toString() === context.expectedTelegramChannelId,
-          resolvedBroadcast: entity.broadcast === true,
-          resolvedMegagroup: entity.megagroup === true,
-          resolvedLeft: entity.left === true,
-          resolvedRestricted: entity.restricted === true,
-          resolvedCreator: entity.creator === true,
-          resolvedAdminRights: permissionNames(entity.adminRights),
-          resolvedDefaultBannedRights: permissionNames(entity.defaultBannedRights),
-        },
-      );
-      const builder = createChannelMessageBuilder(entity.id.toString());
-      await builder.resolve(client);
-      let channelRecoveryInFlight: Promise<void> | undefined;
-      const channelRecoveryBuilder = new Raw({ types: [Api.UpdateChannelTooLong] });
-      const channelRecoveryHandler = (update: unknown): void => {
-        if (
-          !(update instanceof Api.UpdateChannelTooLong) ||
-          update.channelId.toString() !== entity.id.toString() ||
-          channelRecoveryInFlight !== undefined
-        ) {
-          return;
-        }
-
-        channelRecoveryInFlight = recoverChannelUpdateState(client, entity, update)
-          .then(() => undefined)
-          .catch(reportBackgroundError)
-          .finally(() => {
-            channelRecoveryInFlight = undefined;
-          });
-      };
-      client.addEventHandler(channelRecoveryHandler, channelRecoveryBuilder);
-      const pendingChannelRecovery = consumePendingChannelTooLongUpdate(
-        pendingChannelTooLongUpdates,
-        entity.id.toString(),
-      );
-      if (pendingChannelRecovery !== undefined) {
-        channelRecoveryInFlight = recoverChannelUpdateState(client, entity, pendingChannelRecovery)
-          .then(() => undefined)
-          .catch(reportBackgroundError)
-          .finally(() => {
-            channelRecoveryInFlight = undefined;
-          });
-      }
-      const handler = (event: NewMessageEvent): void => {
-        void (async () => {
-          const correlationId = `upd-${nextDiagnosticCorrelationId++}`;
-          const actualTelegramChannelId = telegramChannelIdFromEvent(event);
-          const sourceMessageId = event.message.id;
-          diagnostic(
-            'diagnostic_raw_telegram_update',
-            'received',
-            'native_new_message_handler_invoked',
-            actualTelegramChannelId,
-            sourceMessageId,
-            rawUpdateMetadata(event, entity, correlationId),
-          );
-          try {
-            const mappedMessage = await mapGramJsEvent(event, entity);
-            const scoped = mappedMessage.chatKind === 'channel_post' &&
-              mappedMessage.telegramChannelId === context.expectedTelegramChannelId;
-            diagnostic(
-              'diagnostic_scoped_channel_guard',
-              scoped ? 'passed' : 'ignored',
-              scoped
-                ? 'accepted'
-                : scopedChannelReason(mappedMessage, context.expectedTelegramChannelId),
-              mappedMessage.telegramChannelId ?? actualTelegramChannelId,
-              mappedMessage.sourceMessageId,
-              { correlationId, accepted: scoped },
-            );
-            diagnostic(
-              'diagnostic_mapper',
-              'mapped',
-              `chat_kind:${mappedMessage.chatKind}`,
-              mappedMessage.telegramChannelId ?? actualTelegramChannelId,
-              mappedMessage.sourceMessageId,
-              { correlationId, telegramChannelId: mappedMessage.telegramChannelId },
-            );
-            await onMessage({ ...mappedMessage, correlationId });
-          } catch (error) {
-            diagnostic(
-              'diagnostic_mapper',
-              'failed',
-              errorReason(error),
-              actualTelegramChannelId,
-              sourceMessageId,
-              {
-                correlationId,
-                errorName: error instanceof Error ? error.name : 'UnknownError',
-                errorMessage: errorReason(error),
-              },
-            );
-            try {
-              await onError(error);
-            } catch (boundaryError) {
-              await reportBackgroundError(boundaryError);
-            }
-          }
-        })();
-      };
-      client.addEventHandler(handler, builder);
+      const entity = await resolveBroadcastChannel(client, identifier);
       listenerRegistrationCount += 1;
-      diagnostic(
-        'diagnostic_listener_registration',
-        'registered',
-        'native_gramjs_handler_registered',
-        entity.id.toString(),
-        undefined,
+      logger?.info(
         {
+          account: context.accountSessionKey,
+          channel: context.channelId,
+          action: 'diagnostic_listener_registration',
+          status: 'registered',
+          reason: 'telegram_update_engine_subscription_registered',
+          ...diagnosticFields(context, nativeClientInstanceId),
           resolvedTelegramChannelId: entity.id.toString(),
-          telegramChannelId: context.expectedTelegramChannelId,
-          eventBuilderType: builder.constructor.name,
-          eventBuilderChats: builder.chats,
-          eventBuilderResolved: builder.resolved,
-          registrationIndex: listenerRegistrationCount + 1,
-          handlerRegistrationCount: listenerRegistrationCount + 1,
+          registrationIndex: listenerRegistrationCount,
+          handlerRegistrationCount: listenerRegistrationCount,
         },
+        'Telegram listener diagnostic',
       );
-      return (): Promise<void> => {
-        client.removeEventHandler(handler, builder);
-        client.removeEventHandler(channelRecoveryHandler, channelRecoveryBuilder);
+      const unsubscribe = await engine.subscribe({
+        assignmentId: context.assignmentId,
+        accountId: context.accountId,
+        accountKey: context.accountSessionKey,
+        channel: {
+          id: context.channelId,
+          telegramChannelId: context.expectedTelegramChannelId,
+          ...(context.usernameUsedForResolution === undefined ? {} : { username: context.usernameUsedForResolution }),
+          title: entity.title,
+          enabled: true,
+          status: 'active',
+          createdAt: '',
+          updatedAt: '',
+        },
+        identifier,
+        onLivePost: async (event) => onMessage({ ...event, nativeClientInstanceId }),
+        onError,
+      });
+      return async (): Promise<void> => {
+        await unsubscribe();
         listenerRegistrationCount -= 1;
-        diagnostic(
-          'diagnostic_listener_registration',
-          'removed',
-          'native_gramjs_handler_removed',
-          entity.id.toString(),
-          undefined,
-          { handlerRegistrationCount: listenerRegistrationCount },
-        );
-        return Promise.resolve();
       };
     },
     async sendChannelComment(identifier, sourceMessageId, text) {
@@ -722,102 +550,6 @@ export function createChannelMessageBuilder(telegramChannelId: string): NewMessa
   return new NewMessage({ chats: [telegramChannelId] });
 }
 
-/**
- * A numeric `NewMessage.chats` filter is local-only. When Telegram reports a
- * channel gap, acknowledge its latest pts with the channel's access-hash-backed
- * InputChannel so future live updates resume without replaying missed posts.
- */
-export function rememberPendingChannelTooLongUpdate(
-  pendingUpdates: Map<string, Api.UpdateChannelTooLong>,
-  update: unknown,
-): void {
-  if (update instanceof Api.UpdateChannelTooLong) {
-    pendingUpdates.set(update.channelId.toString(), update);
-  }
-}
-
-export function consumePendingChannelTooLongUpdate(
-  pendingUpdates: Map<string, Api.UpdateChannelTooLong>,
-  telegramChannelId: string,
-): Api.UpdateChannelTooLong | undefined {
-  const update = pendingUpdates.get(telegramChannelId);
-  if (update !== undefined) {
-    pendingUpdates.delete(telegramChannelId);
-  }
-  return update;
-}
-
-export async function recoverChannelUpdateState(
-  client: Pick<TelegramClient, 'invoke'>,
-  entity: Api.Channel,
-  update: unknown,
-): Promise<boolean> {
-  if (
-    !(update instanceof Api.UpdateChannelTooLong) ||
-    update.channelId.toString() !== entity.id.toString()
-  ) {
-    return false;
-  }
-
-  const channel = utils.getInputChannel(entity);
-  let pts = update.pts ?? 1;
-
-  for (;;) {
-    const difference = await client.invoke(new Api.updates.GetChannelDifference({
-      channel,
-      filter: new Api.ChannelMessagesFilterEmpty(),
-      pts,
-      limit: 100,
-      force: true,
-    }));
-
-    if (difference instanceof Api.updates.ChannelDifferenceEmpty) {
-      return true;
-    }
-
-    if (difference instanceof Api.updates.ChannelDifferenceTooLong) {
-      for (const differenceUpdate of buildChannelTooLongUpdates(difference)) {
-        _handleUpdate(client as TelegramClient, differenceUpdate);
-      }
-      return true;
-    }
-
-    for (const differenceUpdate of [
-      ...difference.otherUpdates,
-      ...difference.newMessages.map((message) => new Api.UpdateNewChannelMessage({
-        message,
-        pts: difference.pts,
-        ptsCount: 0,
-      })),
-    ]) {
-      _handleUpdate(client as TelegramClient, differenceUpdate);
-    }
-
-    if (difference.final) {
-      return true;
-    }
-
-    pts = difference.pts;
-  }
-}
-
-function buildChannelTooLongUpdates(
-  difference: Api.updates.ChannelDifferenceTooLong,
-): Api.TypeUpdate[] {
-  const pts = difference.dialog instanceof Api.Dialog ? difference.dialog.pts ?? 0 : 0;
-  const updates: Api.TypeUpdate[] = [];
-  for (const message of difference.messages) {
-    if (message instanceof Api.Message) {
-      updates.push(new Api.UpdateNewChannelMessage({
-        message,
-        pts,
-        ptsCount: 0,
-      }));
-    }
-  }
-  return updates;
-}
-
 function permissionNames(rights: unknown): readonly string[] | undefined {
   if (typeof rights !== 'object' || rights === null) return undefined;
   const names = Object.entries(rights)
@@ -927,11 +659,6 @@ export async function mapGramJsEvent(
   };
 }
 
-function telegramChannelIdFromEvent(event: NewMessageEvent): string | undefined {
-  const peer = event.message.peerId;
-  return peer instanceof Api.PeerChannel ? peer.channelId.toString() : undefined;
-}
-
 function diagnosticFields(
   context: TelegramChannelSubscriptionContext,
   nativeClientInstanceId: string,
@@ -946,33 +673,6 @@ function diagnosticFields(
     nativeClientInstanceId,
     ...extra,
   };
-}
-
-function rawUpdateMetadata(
-  event: NewMessageEvent,
-  entity: Api.Channel,
-  correlationId: string,
-): Record<string, unknown> {
-  const peer = event.message.peerId;
-  return {
-    correlationId,
-    updateType: event.originalUpdate.constructor.name,
-    ...(peer === undefined ? {} : { rawPeerType: peer.constructor.name }),
-    ...(peer instanceof Api.PeerChannel ? { rawPeerId: peer.channelId.toString() } : {}),
-    post: event.message.post === true,
-    broadcast: entity.broadcast === true,
-    hasMessage: event.message !== undefined,
-  };
-}
-
-function scopedChannelReason(
-  message: TelegramIncomingMessage,
-  expectedTelegramChannelId: string,
-): string {
-  if (message.chatKind !== 'channel_post') return `chat_kind:${message.chatKind}`;
-  if (message.telegramChannelId === undefined) return 'actual_channel_id_unavailable';
-  if (message.telegramChannelId !== expectedTelegramChannelId) return 'channel_identity_mismatch';
-  return 'unknown_scoped_channel_guard_failure';
 }
 
 async function buildTelegramMessageLink(message: Api.Message): Promise<string> {
