@@ -18,6 +18,7 @@
     "check": "npm run typecheck && npm run lint && npm run test && npm run build"
   },
   "dependencies": {
+    "better-sqlite3": "^13.0.3",
     "dotenv": "17.4.2",
     "pino": "10.3.1",
     "telegraf": "4.16.3",

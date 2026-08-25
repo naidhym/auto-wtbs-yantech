@@ -5,6 +5,7 @@ import type { ChannelRecord } from '../channels/channel.types.js';
 import { errorReason, type AppLogger } from '../logging/logger.js';
 import type { TelegramIncomingMessage } from '../rules/rule.types.js';
 import { mapGramJsEvent, resolveBroadcastChannel } from './gramjs-client.service.js';
+import { canonicalTelegramChannelId } from './telegram-channel-id.js';
 import {
   TelegramChannelSyncStateRepository,
   type TelegramChannelSyncStateRecord,
@@ -66,7 +67,7 @@ export class TelegramUpdateEngine {
 
   public async subscribe(input: TelegramEngineSubscription): Promise<() => Promise<void>> {
     const entity = await resolveBroadcastChannel(this.client, input.identifier);
-    const channelKey = entity.id.toString();
+    const channelKey = canonicalTelegramChannelId(entity.id);
     const existing = this.channels.get(channelKey);
     const sync = this.syncStates.ensure(input.accountId, input.channel.id);
     const state: EngineChannelState = existing ?? {
@@ -110,7 +111,7 @@ export class TelegramUpdateEngine {
     const channels = [...this.channels.values()].map((state) => ({
       accountId: state.accountId,
       channelId: state.channel.id,
-      telegramChannelId: state.entity.id.toString(),
+      telegramChannelId: canonicalTelegramChannelId(state.entity.id),
       title: state.channel.title,
       health: mapHealth(state.sync.syncStatus),
       pts: state.sync.pts,
@@ -190,7 +191,8 @@ export class TelegramUpdateEngine {
 
   private async handleRawUpdate(update: unknown): Promise<void> {
     if (update instanceof Api.UpdateChannelTooLong) {
-      const state = this.channels.get(update.channelId.toString());
+      const lookupKey = canonicalTelegramChannelId(update.channelId);
+      const state = this.channels.get(lookupKey);
       if (state === undefined) return;
       state.sync = this.syncStates.markDegraded(state.accountId, state.channel.id, 'channel_too_long');
       await this.synchronize(state, 'gap');
@@ -200,8 +202,24 @@ export class TelegramUpdateEngine {
     if (!(update instanceof Api.UpdateNewChannelMessage) || !(update.message instanceof Api.Message)) return;
     if (!(update.message.peerId instanceof Api.PeerChannel)) return;
 
-    const state = this.channels.get(update.message.peerId.channelId.toString());
-    if (state === undefined) return;
+    const lookupKey = canonicalTelegramChannelId(update.message.peerId.channelId);
+    const state = this.channels.get(lookupKey);
+    
+    if (state === undefined) {
+      // Log the mismatch for debugging
+      this.logger.debug(
+        {
+          account: this.accountKey,
+          action: 'telegram_update_registry_miss',
+          status: 'not_found',
+          extractedChannelId: lookupKey,
+          registeredChannels: Array.from(this.channels.keys()),
+          messageId: update.message.id,
+        },
+        'Native update received for unregistered channel',
+      );
+      return;
+    }
 
     if (state.sync.syncStatus !== 'healthy') {
       await this.synchronize(state, 'gap');
