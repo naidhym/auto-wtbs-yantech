@@ -68,7 +68,7 @@ function createSyncRepository(root: string, channels: ReadonlyArray<readonly [st
   `);
   const insertChannel = database.prepare(`
     INSERT INTO channels (id, telegram_channel_id, title, is_enabled, status)
-    VALUES (?, ?, ?, 1, 'active')
+    VALUES (?, ?, ?, 1, 'healthy')
   `);
   for (const [index, [telegramChannelId, title]] of channels.entries()) {
     insertChannel.run(index + 1, telegramChannelId, title);
@@ -140,7 +140,7 @@ describe('telegram update engine', () => {
             telegramChannelId: id,
             title,
             enabled: true,
-            status: 'active',
+            status: 'pending',
             createdAt: '',
             updatedAt: '',
           },
@@ -189,7 +189,7 @@ describe('telegram update engine', () => {
       assignmentId: 1,
       accountId: 1,
       accountKey: 'account-1',
-      channel: { id: 1, telegramChannelId: '7000000001', title: 'tes2autobot', enabled: true, status: 'active', createdAt: '', updatedAt: '' },
+      channel: { id: 1, telegramChannelId: '7000000001', title: 'tes2autobot', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
       identifier: '7000000001',
       onLivePost: () => Promise.resolve(),
       onError: () => Promise.resolve(),
@@ -211,7 +211,7 @@ describe('telegram update engine', () => {
       assignmentId: 2,
       accountId: 1,
       accountKey: 'account-1',
-      channel: { id: 1, telegramChannelId: '7000000001', title: 'tes2autobot', enabled: true, status: 'active', createdAt: '', updatedAt: '' },
+      channel: { id: 1, telegramChannelId: '7000000001', title: 'tes2autobot', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
       identifier: '7000000001',
       onLivePost: (event) => {
         received.push(event.sourceMessageId ?? 0);
@@ -259,7 +259,7 @@ describe('telegram update engine', () => {
       assignmentId: 1,
       accountId: 1,
       accountKey: 'account-1',
-      channel: { id: 1, telegramChannelId: '7000000002', title: 'BASE WIB', enabled: true, status: 'active', createdAt: '', updatedAt: '' },
+      channel: { id: 1, telegramChannelId: '7000000002', title: 'BASE WIB', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
       identifier: '7000000002',
       onLivePost: (event) => {
         live.push(event.sourceMessageId ?? 0);
@@ -297,7 +297,7 @@ describe('telegram update engine', () => {
         assignmentId: index + 1,
         accountId: 1,
         accountKey: 'account-1',
-        channel: { id: index + 1, telegramChannelId: id, title, enabled: true, status: 'active', createdAt: '', updatedAt: '' },
+        channel: { id: index + 1, telegramChannelId: id, title, enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
         identifier: id,
         onLivePost: (event) => {
           received.push(event.sourceMessageId ?? 0);
@@ -355,7 +355,7 @@ describe('telegram update engine', () => {
       assignmentId: 1,
       accountId: 1,
       accountKey: 'account-1',
-      channel: { id: 1, telegramChannelId: '7000000201', title: 'BASE WTB', enabled: true, status: 'active', createdAt: '', updatedAt: '' },
+      channel: { id: 1, telegramChannelId: '7000000201', title: 'BASE WTB', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
       identifier: '7000000201',
       onLivePost: () => Promise.resolve(),
       onError: () => Promise.resolve(),
@@ -389,7 +389,7 @@ describe('telegram update engine', () => {
       assignmentId: 1,
       accountId: 1,
       accountKey: 'account-1',
-      channel: { id: 1, telegramChannelId: '7000000301', title: 'bad', enabled: true, status: 'active', createdAt: '', updatedAt: '' },
+      channel: { id: 1, telegramChannelId: '7000000301', title: 'bad', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
       identifier: '7000000301',
       onLivePost: () => Promise.resolve(),
       onError: (error) => {
@@ -402,7 +402,7 @@ describe('telegram update engine', () => {
       assignmentId: 2,
       accountId: 1,
       accountKey: 'account-1',
-      channel: { id: 2, telegramChannelId: '7000000302', title: 'good', enabled: true, status: 'active', createdAt: '', updatedAt: '' },
+      channel: { id: 2, telegramChannelId: '7000000302', title: 'good', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
       identifier: '7000000302',
       onLivePost: (event) => {
         goodLive.push(event.sourceMessageId ?? 0);
@@ -458,7 +458,7 @@ describe('telegram update engine', () => {
       assignmentId: 1,
       accountId: 1,
       accountKey: 'account-1',
-      channel: { id: 1, telegramChannelId: '7000000401', title: 'tes', enabled: true, status: 'active', createdAt: '', updatedAt: '' },
+      channel: { id: 1, telegramChannelId: '7000000401', title: 'tes', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
       identifier: '7000000401',
       onLivePost: () => Promise.resolve(),
       onError: () => Promise.resolve(),
@@ -469,7 +469,7 @@ describe('telegram update engine', () => {
       assignmentId: 2,
       accountId: 2,
       accountKey: 'account-2',
-      channel: { id: 1, telegramChannelId: '7000000401', title: 'tes', enabled: true, status: 'active', createdAt: '', updatedAt: '' },
+      channel: { id: 1, telegramChannelId: '7000000401', title: 'tes', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
       identifier: '7000000401',
       onLivePost: (event) => {
         goodLive.push(event.sourceMessageId ?? 0);
@@ -508,7 +508,7 @@ describe('telegram update engine', () => {
       assignmentId: 1,
       accountId: 1,
       accountKey: 'account-1',
-      channel: { id: 1, telegramChannelId: '7000000501', title: 'stale', enabled: true, status: 'active', createdAt: '', updatedAt: '' },
+      channel: { id: 1, telegramChannelId: '7000000501', title: 'stale', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
       identifier: '7000000501',
       onLivePost: (event) => {
         live.push(event.sourceMessageId ?? 0);
@@ -545,7 +545,7 @@ describe('telegram update engine', () => {
       assignmentId: 1,
       accountId: 1,
       accountKey: 'account-1',
-      channel: { id: 1, telegramChannelId: '7000000601', title: 'tes', enabled: true, status: 'active', createdAt: '', updatedAt: '' },
+      channel: { id: 1, telegramChannelId: '7000000601', title: 'tes', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
       identifier: '7000000601',
       onLivePost: () => Promise.resolve(),
       onError: () => Promise.resolve(),
@@ -556,7 +556,7 @@ describe('telegram update engine', () => {
       assignmentId: 2,
       accountId: 1,
       accountKey: 'account-1',
-      channel: { id: 2, telegramChannelId: '7000000602', title: 'new-channel', enabled: true, status: 'active', createdAt: '', updatedAt: '' },
+      channel: { id: 2, telegramChannelId: '7000000602', title: 'new-channel', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
       identifier: '7000000602',
       onLivePost: (event) => {
         live.push(event.sourceMessageId ?? 0);

@@ -34,7 +34,7 @@ export class GramJsAutoReplyGateway implements AutoReplyGateway {
     target: SourceReactionTarget,
   ) {
     const client = this.requireClient(accountKey);
-    return client.reactToChannelMessage(target.channelIdentifier, target.sourceMessageId);
+    return client.reactToChannelMessage(target.channelIdentifier, target.replyMessageId);
   }
 
   private requireClient(accountKey: string) {

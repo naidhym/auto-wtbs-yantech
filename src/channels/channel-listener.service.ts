@@ -150,7 +150,7 @@ export class ChannelListenerService {
         async (error) => this.handleListenerError(assignment, channel, error),
       );
       this.active.set(assignment.id, { assignment, channel, unsubscribe });
-      this.repository.setAssignmentStatus(assignment.id, 'active');
+      this.repository.setAssignmentStatus(assignment.id, 'healthy');
       this.logger.info(
         {
           account: assignment.accountKey,
@@ -318,11 +318,11 @@ export class ChannelListenerService {
       }
     }
     const reason = errorReason(error);
-    const inaccessible = /CHANNEL_PRIVATE|CHAT_ADMIN_REQUIRED|AUTH_KEY_UNREGISTERED|forbidden|access/i.test(reason);
-    this.repository.setAssignmentStatus(assignment.id, inaccessible ? 'inaccessible' : 'error');
+    const isAccessError = /CHANNEL_PRIVATE|CHAT_ADMIN_REQUIRED|AUTH_KEY_UNREGISTERED|forbidden|access/i.test(reason);
+    this.repository.setAssignmentStatus(assignment.id, 'error');
     this.logger.error(
-      { account: assignment.accountKey, channel: channel.id, action: inaccessible ? 'channel_access_lost' : 'channel_listener_error', status: inaccessible ? 'inaccessible' : 'failed', errorReason: reason },
-      inaccessible ? 'Telegram channel access was lost' : 'Channel listener failed',
+      { account: assignment.accountKey, channel: channel.id, action: isAccessError ? 'channel_access_lost' : 'channel_listener_error', status: 'error', errorReason: reason },
+      isAccessError ? 'Telegram channel access was lost' : 'Channel listener failed',
     );
   }
 

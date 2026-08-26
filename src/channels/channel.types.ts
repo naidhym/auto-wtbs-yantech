@@ -1,15 +1,14 @@
 import type { TelegramIncomingMessage } from '../rules/rule.types.js';
 
 export type ChannelOperationalStatus =
-  | 'active'
-  | 'disabled'
-  | 'error'
-  | 'inaccessible'
-  | 'connecting'
-  | 'syncing'
-  | 'healthy'
-  | 'degraded'
-  | 'disconnected';
+  | 'pending'      // Channel created, awaiting initial resolution
+  | 'resolving'    // Currently resolving Telegram entity
+  | 'syncing'      // Syncing with TelegramUpdateEngine
+  | 'healthy'      // Fully operational and synchronized
+  | 'degraded'     // Operational but experiencing issues
+  | 'error'        // Encountered unrecoverable error
+  | 'disabled'     // Manually disabled
+  | 'disconnected'; // Account disconnected
 
 export interface ChannelRecord {
   readonly id: number;

@@ -12,8 +12,8 @@ export const independentChannelsMigration: Migration = {
         username TEXT,
         title TEXT NOT NULL,
         is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
-        status TEXT NOT NULL DEFAULT 'active'
-          CHECK (status IN ('active', 'disabled', 'error', 'inaccessible', 'connecting', 'syncing', 'healthy', 'degraded', 'disconnected')),
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'resolving', 'syncing', 'healthy', 'degraded', 'error', 'disabled', 'disconnected')),
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
@@ -27,7 +27,7 @@ export const independentChannelsMigration: Migration = {
         MAX(username),
         COALESCE(MAX(title), MAX(username), telegram_channel_id),
         MAX(is_active),
-        CASE WHEN MAX(is_active) = 1 THEN 'active' ELSE 'disabled' END,
+        CASE WHEN MAX(is_active) = 1 THEN 'healthy' ELSE 'disabled' END,
         MIN(created_at),
         MAX(updated_at)
       FROM channels
@@ -38,8 +38,8 @@ export const independentChannelsMigration: Migration = {
         account_id INTEGER NOT NULL,
         channel_id INTEGER NOT NULL,
         is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
-        status TEXT NOT NULL DEFAULT 'active'
-          CHECK (status IN ('active', 'disabled', 'error', 'inaccessible', 'connecting', 'syncing', 'healthy', 'degraded', 'disconnected')),
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'resolving', 'syncing', 'healthy', 'degraded', 'error', 'disabled', 'disconnected')),
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         UNIQUE (account_id, channel_id),
@@ -54,7 +54,7 @@ export const independentChannelsMigration: Migration = {
         legacy.account_id,
         canonical.id,
         legacy.is_active,
-        CASE WHEN legacy.is_active = 1 THEN 'active' ELSE 'disabled' END,
+        CASE WHEN legacy.is_active = 1 THEN 'healthy' ELSE 'disabled' END,
         legacy.created_at,
         legacy.updated_at
       FROM channels AS legacy

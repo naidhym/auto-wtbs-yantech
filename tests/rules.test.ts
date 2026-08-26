@@ -297,7 +297,7 @@ function createHarness(): {
     INSERT INTO channels (id, telegram_channel_id, username, title)
     VALUES (1, '100901', 'globaltest', 'Global Test Channel');
     INSERT INTO account_channels (id, account_id, channel_id, status)
-    VALUES (1, 1, 1, 'active');
+    VALUES (1, 1, 1, 'healthy');
   `);
 
   const channel: ChannelRecord = {
@@ -306,7 +306,7 @@ function createHarness(): {
     username: 'globaltest',
     title: 'Global Test Channel',
     enabled: true,
-    status: 'active',
+    status: 'pending',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   };
@@ -317,7 +317,7 @@ function createHarness(): {
     accountNickname: 'Detection Account',
     channelId: 1,
     enabled: true,
-    status: 'active',
+    status: 'pending',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   };

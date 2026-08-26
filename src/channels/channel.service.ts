@@ -147,6 +147,53 @@ export class ChannelService {
     this.logger.info({ channel: channelId, action: 'channel_remove', status: 'removed' }, 'Independent channel removed');
   }
 
+  public async removeBulk(channelIds: readonly number[]): Promise<void> {
+    for (const channelId of channelIds) {
+      this.getChannel(channelId);
+      await this.listeners.stopChannel(channelId);
+    }
+    this.repository.removeBulk(channelIds);
+    this.logger.info(
+      { action: 'channel_remove_bulk', status: 'removed', count: channelIds.length },
+      `${channelIds.length} channels removed in bulk`,
+    );
+  }
+
+  public async assignAccountBulk(
+    channelIds: readonly number[],
+    accountKeys: readonly string[],
+  ): Promise<Array<{ channel: ChannelRecord; assignments: ChannelAssignmentRecord[] }>> {
+    const accounts = accountKeys.map((key) => this.accounts.get(key));
+    const results: Array<{ channel: ChannelRecord; assignments: ChannelAssignmentRecord[] }> = [];
+
+    for (const channelId of channelIds) {
+      const detail = this.getChannel(channelId);
+      const newAssignments: ChannelAssignmentRecord[] = [];
+
+      for (const account of accounts) {
+        if (this.repository.getAssignment(account.id, channelId) === undefined) {
+          const assignment = this.repository.assign(account.id, channelId);
+          newAssignments.push(assignment);
+          this.logger.info(
+            { account: account.accountKey, channel: channelId, action: 'channel_assign', status: 'assigned' },
+            `Account ${account.label} assigned to channel`,
+          );
+        }
+      }
+
+      if (newAssignments.length > 0) {
+        await this.startAssignments(detail, newAssignments);
+      }
+
+      results.push({
+        channel: detail.channel,
+        assignments: this.repository.listAssignmentsForChannel(this.ownerTelegramId, channelId),
+      });
+    }
+
+    return results;
+  }
+
   public startListeners(): Promise<ListenerStartSummary> {
     return this.listeners.startAll(this.ownerTelegramId);
   }

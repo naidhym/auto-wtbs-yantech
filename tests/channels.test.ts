@@ -144,7 +144,7 @@ describe('M3 independent channel management', () => {
         'account-00000000-0000-4000-8000-000000000799', 'connected', 1
       );
       INSERT INTO account_channels (account_id, channel_id, is_enabled, status)
-      VALUES (3, 1, 1, 'active');
+      VALUES (3, 1, 1, 'healthy');
     `);
     await harness.listener.stopAll();
 

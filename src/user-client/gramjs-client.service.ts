@@ -65,7 +65,7 @@ export interface TelegramClientAdapter {
   ): Promise<SentTelegramComment>;
   reactToChannelMessage(
     identifier: string,
-    sourceMessageId: number,
+    replyMessageId: number,
   ): Promise<TelegramReactionResult>;
   sendOperationalNotification(
     target: string,
@@ -227,7 +227,7 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
           ...(context.usernameUsedForResolution === undefined ? {} : { username: context.usernameUsedForResolution }),
           title: entity.title,
           enabled: true,
-          status: 'active',
+          status: 'pending',
           createdAt: '',
           updatedAt: '',
         },
@@ -252,9 +252,9 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
         resolveMessageLink: () => buildTelegramMessageLink(sent),
       };
     },
-    async reactToChannelMessage(identifier, sourceMessageId) {
+    async reactToChannelMessage(identifier, replyMessageId) {
       const entity = await resolveBroadcastChannel(client, identifier);
-      return reactToChannelMessage(client, entity, sourceMessageId);
+      return reactToChannelMessage(client, entity, replyMessageId);
     },
     async sendOperationalNotification(target, notification) {
       await client.sendMessage(target, createTelegramNotificationPayload(notification));
@@ -390,11 +390,11 @@ export class GramJsClientService {
 
   public reactToChannelMessage(
     identifier: string,
-    sourceMessageId: number,
+    replyMessageId: number,
   ): Promise<TelegramReactionResult> {
     return this.enqueue(async () => {
       if (!this.getStatus().connected) throw new Error('Telegram client is not connected');
-      return this.client.reactToChannelMessage(identifier, sourceMessageId);
+      return this.client.reactToChannelMessage(identifier, replyMessageId);
     });
   }
 
@@ -627,10 +627,10 @@ export function createHeartReactionRequest(
 export async function reactToChannelMessage(
   client: TelegramClient,
   channel: Api.Channel,
-  sourceMessageId: number,
+  replyMessageId: number,
 ): Promise<TelegramReactionResult> {
-  if (!Number.isSafeInteger(sourceMessageId) || sourceMessageId < 1) {
-    throw new Error('Source channel message ID is invalid');
+  if (!Number.isSafeInteger(replyMessageId) || replyMessageId < 1) {
+    throw new Error('Reply message ID is invalid');
   }
   const fullChannel = await client.invoke(new Api.channels.GetFullChannel({ channel }));
   const capability = evaluateHeartReactionCapability(fullChannel.fullChat.availableReactions);
@@ -641,7 +641,7 @@ export async function reactToChannelMessage(
     };
   }
   const peer = await client.getInputEntity(channel);
-  await client.invoke(createHeartReactionRequest(peer, sourceMessageId));
+  await client.invoke(createHeartReactionRequest(peer, replyMessageId));
   return { status: 'sent' };
 }
 

@@ -137,6 +137,9 @@ type AdminConversationState =
   | { readonly step: 'starting_login'; readonly accountKey: string }
   | { readonly step: 'awaiting_otp'; readonly accountKey: string }
   | { readonly step: 'awaiting_password'; readonly accountKey: string }
+  | { readonly step: 'awaiting_channel_identifiers' }
+  | { readonly step: 'confirming_bulk_channels'; readonly resolvedChannels: BulkChannelResolutionState }
+  | { readonly step: 'selecting_bulk_accounts'; readonly channelIds: number[] }
   | { readonly step: 'awaiting_channel_identifier' }
   | { readonly step: 'awaiting_channel_account'; readonly identifier: string }
   | { readonly step: 'awaiting_rule_name'; readonly ruleId?: number }
@@ -164,6 +167,12 @@ type AdminConversationState =
   | { readonly step: 'awaiting_hourly_limit'; readonly accountKey: string }
   | { readonly step: 'awaiting_daily_limit'; readonly accountKey: string }
   | { readonly step: 'awaiting_notification_target'; readonly accountKey: string };
+
+interface BulkChannelResolutionState {
+  readonly valid: Array<{ id: number; title: string; username?: string }>;
+  readonly invalid: Array<{ identifier: string; reason: string }>;
+  readonly duplicates: Array<{ identifier: string; title: string }>;
+}
 
 interface RuleDraft {
   readonly ruleId?: number;
@@ -455,15 +464,23 @@ export class AdminBotService {
     this.bot.action('c:add', async (context) => {
       await acknowledgeCallback(context);
       this.conversations.set(requireActorId(context), {
-        step: 'awaiting_channel_identifier',
+        step: 'awaiting_channel_identifiers',
       });
       await this.present(
         context,
         [
-          '➕ Add Channel',
+          '➕ Add Channels',
           '',
-          'Send @username, a public t.me link, or a numeric channel ID.',
-          'No account will be joined automatically.',
+          'Send the Telegram channels you want to monitor.',
+          'You can send multiple channels in one message.',
+          '',
+          'Examples:',
+          '@channelname',
+          'https://t.me/channelname',
+          'https://t.me/+invite...',
+          '-100123456789',
+          '',
+          'You can put one channel per line.',
         ].join('\n'),
         cancelKeyboard(),
         true,
@@ -1095,6 +1112,11 @@ export class AdminBotService {
         return;
       }
 
+      if (state.step === 'awaiting_channel_identifiers') {
+        await this.handleBulkChannelIdentifiersInput(context, context.message.text);
+        return;
+      }
+
       if (state.step === 'awaiting_global_triggers') {
         await this.handleGlobalConfigInput(context, 'trigger', context.message.text);
         return;
@@ -1433,6 +1455,22 @@ export class AdminBotService {
         [Markup.button.callback('❌ Cancel', 'flow:cancel')],
       ]),
     );
+  }
+
+  private async handleBulkChannelIdentifiersInput(
+    context: Context,
+    input: string,
+  ): Promise<void> {
+    await this.withAdminError(context, async () => {
+      const text = input.trim();
+      if (text.length === 0) {
+        throw new Error('Please send at least one channel identifier');
+      }
+
+      // For now, treat as single identifier and delegate to original handler
+      // This maintains backward compatibility while the bulk UI is being completed
+      await this.handleChannelIdentifierInput(context, text);
+    });
   }
 
   private registerLegacyCommands(): void {

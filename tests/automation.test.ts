@@ -77,7 +77,7 @@ class FakeAutoReplyGateway implements AutoReplyGateway {
   public reactions: Array<{
     accountKey: string;
     channelIdentifier: string;
-    sourceMessageId: number;
+    replyMessageId: number;
   }> = [];
   public reactionMode: 'sent' | 'skipped' | 'failed' = 'sent';
   public linkMode: 'available' | 'unavailable' = 'available';
@@ -106,8 +106,8 @@ class FakeAutoReplyGateway implements AutoReplyGateway {
     });
   }
 
-  public reactToSourceMessage(accountKey: string, target: { channelIdentifier: string; sourceMessageId: number }) {
-    this.reactions.push({ accountKey, channelIdentifier: target.channelIdentifier, sourceMessageId: target.sourceMessageId });
+  public reactToSourceMessage(accountKey: string, target: { channelIdentifier: string; replyMessageId: number }) {
+    this.reactions.push({ accountKey, channelIdentifier: target.channelIdentifier, replyMessageId: target.replyMessageId });
     if (this.reactionMode === 'skipped') {
       return Promise.resolve({ status: 'skipped' as const, reason: 'chat_reactions_none' });
     }
@@ -316,7 +316,7 @@ describe('M5 auto reply and safety', () => {
     expect(harness.telegram.reactions).toEqual([{
       accountKey: ACCOUNT_A,
       channelIdentifier: '@channel_one',
-      sourceMessageId: 115,
+      replyMessageId: 5001,
     }]);
     expect(harness.notifier.notifications).toContainEqual({
       accountKey: ACCOUNT_A,
@@ -346,9 +346,9 @@ describe('M5 auto reply and safety', () => {
     await harness.process(1, 1, { text: 'bucin', sourceMessageId: 117 });
 
     expect(harness.telegram.reactions).toEqual([
-      { accountKey: ACCOUNT_A, channelIdentifier: '@channel_one', sourceMessageId: 117 },
-      { accountKey: ACCOUNT_B, channelIdentifier: '@channel_one', sourceMessageId: 117 },
-      { accountKey: ACCOUNT_C, channelIdentifier: '@channel_one', sourceMessageId: 117 },
+      { accountKey: ACCOUNT_A, channelIdentifier: '@channel_one', replyMessageId: 24 },
+      { accountKey: ACCOUNT_B, channelIdentifier: '@channel_one', replyMessageId: 25 },
+      { accountKey: ACCOUNT_C, channelIdentifier: '@channel_one', replyMessageId: 26 },
     ]);
     expect(harness.connection.prepare(`
       SELECT source_message_id, reply_message_id, reaction_status
@@ -707,10 +707,10 @@ function createHarness(scheduler: DelayScheduler = new ImmediateScheduler()) {
       (1, '900001', 'channel_one', 'Channel One', 1),
       (2, '900002', 'channel_two', 'Channel Two', 1);
     INSERT INTO account_channels (id, account_id, channel_id, is_enabled, status) VALUES
-      (1, 1, 1, 1, 'active'),
-      (2, 2, 1, 0, 'active'),
-      (3, 2, 2, 1, 'active'),
-      (4, 3, 1, 0, 'active');
+      (1, 1, 1, 1, 'healthy'),
+      (2, 2, 1, 0, 'healthy'),
+      (3, 2, 2, 1, 'healthy'),
+      (4, 3, 1, 0, 'healthy');
   `);
 
   const accounts = new AccountService(

@@ -560,7 +560,7 @@ describe('Admin Bot button-first M2 UX', () => {
     await harness.bot.handleUpdate(callbackUpdate(41, OWNER_ID, 'm:channels'));
     expect(lastPayload(harness.callApi, 'editMessageText')?.text).toContain('No channels');
     await harness.bot.handleUpdate(callbackUpdate(42, OWNER_ID, 'c:add'));
-    expect(lastPayload(harness.callApi, 'editMessageText')?.text).toContain('No account will be joined');
+    expect(lastPayload(harness.callApi, 'editMessageText')?.text).toContain('Send the Telegram channels');
     await harness.bot.handleUpdate(textUpdate(43, OWNER_ID, '@sharedchannel'));
     expect(lastPayload(harness.callApi, 'sendMessage')?.text).toContain('Choose the Telegram account');
     await harness.bot.handleUpdate(callbackUpdate(44, OWNER_ID, 'c:pick:1'));
@@ -868,7 +868,7 @@ function testChannel(): ChannelRecord {
     username: 'sharedchannel',
     title: 'Shared Channel',
     enabled: true,
-    status: 'active',
+    status: 'pending',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   };
@@ -882,7 +882,7 @@ function testAssignment(id: number, account: AccountRecord, channelId: number): 
     accountNickname: account.nickname,
     channelId,
     enabled: true,
-    status: 'active',
+    status: 'pending',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   };

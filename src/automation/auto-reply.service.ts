@@ -519,11 +519,11 @@ export class AutoReplyService implements ChannelMessageProcessor {
       );
       return { status: 'skipped', reason: 'auto_reaction_disabled' };
     }
-    try {
-      const result = await this.telegram.reactToSourceMessage(settings.accountKey, {
-        channelIdentifier: sourceChannelIdentifier,
-        sourceMessageId,
-      });
+     try {
+       const result = await this.telegram.reactToSourceMessage(settings.accountKey, {
+         channelIdentifier: sourceChannelIdentifier,
+         replyMessageId: reply.messageId,
+       });
       if (result.status === 'skipped') {
         const reason = result.reason ?? 'heart_reaction_unavailable';
         this.record(

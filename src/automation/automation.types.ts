@@ -21,7 +21,7 @@ export interface SentReply {
 
 export interface SourceReactionTarget {
   readonly channelIdentifier: string;
-  readonly sourceMessageId: number;
+  readonly replyMessageId: number;  // Changed: target the bot's reply message, not source
 }
 
 export interface ReactionAttemptResult {

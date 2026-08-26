@@ -81,7 +81,7 @@ export class ChannelRepository {
   public saveResolved(channel: ResolvedTelegramChannel): ChannelRecord {
     this.database.prepare(`
       INSERT INTO channels (telegram_channel_id, username, title, is_enabled, status)
-      VALUES (?, ?, ?, 1, 'active')
+      VALUES (?, ?, ?, 1, 'pending')
       ON CONFLICT(telegram_channel_id) DO UPDATE SET
         username = excluded.username,
         title = excluded.title,
@@ -90,11 +90,71 @@ export class ChannelRepository {
     return this.requireByTelegramId(channel.telegramChannelId);
   }
 
+  public saveBulkResolved(channels: readonly ResolvedTelegramChannel[]): ChannelRecord[] {
+    const stmt = this.database.prepare(`
+      INSERT INTO channels (telegram_channel_id, username, title, is_enabled, status)
+      VALUES (?, ?, ?, 1, 'pending')
+      ON CONFLICT(telegram_channel_id) DO UPDATE SET
+        username = excluded.username,
+        title = excluded.title,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    `);
+    for (const channel of channels) {
+      stmt.run(channel.telegramChannelId, channel.username ?? null, channel.title);
+    }
+    return channels.map((c) => this.requireByTelegramId(c.telegramChannelId));
+  }
+
+  public assignBulk(accountId: number, channelIds: readonly number[]): ChannelAssignmentRecord[] {
+    const stmt = this.database.prepare(`
+      INSERT INTO account_channels (account_id, channel_id, is_enabled, status)
+      VALUES (?, ?, 1, 'pending')
+    `);
+    const assignments: ChannelAssignmentRecord[] = [];
+    for (const channelId of channelIds) {
+      stmt.run(accountId, channelId);
+      assignments.push(this.requireAssignment(accountId, channelId));
+    }
+    return assignments;
+  }
+
+  public removeBulk(channelIds: readonly number[]): void {
+    const stmt = this.database.prepare('DELETE FROM channels WHERE id = ?');
+    for (const channelId of channelIds) {
+      stmt.run(channelId);
+    }
+  }
+
+  public unassignBulk(assignmentIds: readonly number[]): void {
+    const stmt = this.database.prepare('DELETE FROM account_channels WHERE id = ?');
+    for (const assignmentId of assignmentIds) {
+      stmt.run(assignmentId);
+    }
+  }
+
+  public setStatusBulk(channelIds: readonly number[], status: ChannelOperationalStatus): void {
+    const stmt = this.database.prepare(`
+      UPDATE channels SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?
+    `);
+    for (const channelId of channelIds) {
+      stmt.run(status, channelId);
+    }
+  }
+
+  public setAssignmentStatusBulk(assignmentIds: readonly number[], status: ChannelOperationalStatus): void {
+    const stmt = this.database.prepare(`
+      UPDATE account_channels SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?
+    `);
+    for (const assignmentId of assignmentIds) {
+      stmt.run(status, assignmentId);
+    }
+  }
+
   public setChannelEnabled(channelId: number, enabled: boolean): void {
     const result = this.database.prepare(`
       UPDATE channels SET is_enabled = ?, status = ?,
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?
-    `).run(enabled ? 1 : 0, enabled ? 'active' : 'disabled', channelId);
+    `).run(enabled ? 1 : 0, enabled ? 'healthy' : 'disabled', channelId);
     assertChanged(result.changes, 'Channel', channelId);
   }
 
@@ -106,7 +166,7 @@ export class ChannelRepository {
   public assign(accountId: number, channelId: number): ChannelAssignmentRecord {
     this.database.prepare(`
       INSERT INTO account_channels (account_id, channel_id, is_enabled, status)
-      VALUES (?, ?, 1, 'active')
+      VALUES (?, ?, 1, 'healthy')
     `).run(accountId, channelId);
     return this.requireAssignment(accountId, channelId);
   }
@@ -249,7 +309,7 @@ export class ChannelRepository {
     const result = this.database.prepare(`
       UPDATE account_channels SET is_enabled = ?, status = ?,
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?
-    `).run(enabled ? 1 : 0, enabled ? 'active' : 'disabled', assignmentId);
+    `).run(enabled ? 1 : 0, enabled ? 'healthy' : 'disabled', assignmentId);
     assertChanged(result.changes, 'Channel assignment', assignmentId);
   }
 
