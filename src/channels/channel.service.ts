@@ -46,7 +46,7 @@ export class ChannelService {
     this.logger.info({ account: accountKey, action: 'channel_resolve', status: 'started' }, 'Channel validation started');
     try {
       const resolved = await this.gateway.resolve(accountKey, identifier);
-      this.logger.info({ account: accountKey, channel: resolved.telegramChannelId, action: 'channel_resolve', status: 'resolved' }, 'Channel resolved through selected account');
+      this.logger.info({ account: accountKey, channel: resolved.telegramChannelId, action: 'channel_resolve', status: 'resolved', entityType: resolved.entityType, title: resolved.title }, 'Channel resolved through selected account');
       const existing = this.repository.getByTelegramId(resolved.telegramChannelId);
       const channel = this.repository.saveResolved(resolved);
       if (existing === undefined) {

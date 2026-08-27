@@ -123,6 +123,19 @@ export class ChannelListenerService {
         channel,
         async (message) => {
           if (!this.acceptingMessages) return;
+          this.logger.info(
+            {
+              account: assignment.accountKey,
+              channel: channel.id,
+              action: 'channel_message_received',
+              status: 'received',
+              telegramChannelId: channel.telegramChannelId,
+              assignmentId: assignment.id,
+              sourceMessageId: message.sourceMessageId,
+              nativeClientInstanceId: this.nativeClientInstanceId(assignment.accountKey),
+            },
+            'Channel message received from Telegram (live event)',
+          );
           await this.track(async () => {
             try {
               await this.processor?.process({ assignment, channel, message });
