@@ -298,7 +298,7 @@ describe('migration v13 channel schema rebuild', () => {
 
     service.initialize();
 
-    expect(service.getMigrationVersion()).toBe(13);
+    expect(service.getMigrationVersion()).toBe(14);
     expect(countRows(service.getConnection(), 'channels')).toBe(0);
     expect(countRows(service.getConnection(), 'account_channels')).toBe(0);
     expect(countRows(service.getConnection(), 'telegram_channel_sync_state')).toBe(0);
@@ -317,7 +317,7 @@ describe('migration v13 channel schema rebuild', () => {
 
     expect(
       database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get(),
-    ).toEqual({ version: 13 });
+    ).toEqual({ version: 14 });
     expect(countRows(database, 'channels')).toBe(0);
     expect(countRows(database, 'account_channels')).toBe(0);
     expect(countRows(database, 'telegram_channel_sync_state')).toBe(0);

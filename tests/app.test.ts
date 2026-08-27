@@ -28,7 +28,7 @@ describe('application lifecycle', () => {
     expect(application.getStatus()).toMatchObject({
       milestone: 'M6',
       state: 'running',
-      migrationVersion: 13,
+      migrationVersion: 14,
       adminBotEnabled: false,
       adminBotRunning: false,
       registeredTelegramClients: 0,

@@ -11,6 +11,7 @@ import { resetChannelsForRedesignMigration } from './0010-reset-channels-for-red
 import { replyExecutionConfigurationMigration } from './0011-reply-execution-configuration.js';
 import { reactionConfigurationMigration } from './0012-reaction-configuration.js';
 import { rebuildChannelSchemaMigration } from './0013-rebuild-channel-schema.js';
+import { rebuildAccountChannelsStatusMigration } from './0014-rebuild-account-channels-status.js';
 import type { Migration } from './types.js';
 
 export const migrations: readonly Migration[] = [
@@ -27,4 +28,5 @@ export const migrations: readonly Migration[] = [
   replyExecutionConfigurationMigration,
   reactionConfigurationMigration,
   rebuildChannelSchemaMigration,
+  rebuildAccountChannelsStatusMigration,
 ];
