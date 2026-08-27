@@ -1,4 +1,5 @@
 import type { AppLogger } from '../logging/logger.js';
+import { parseTelegramReactionType } from '../shared/telegram-reaction.js';
 import { AccountAutomationSettingsRepository } from './account-automation-settings.repository.js';
 import type { AccountAutomationSettings } from './automation.types.js';
 
@@ -16,12 +17,17 @@ export class AccountAutomationSettingsService {
   }
 
   public setReplyDelay(accountKey: string, seconds: string): AccountAutomationSettings {
-    const replyDelayMs = parseSecondsToMilliseconds(seconds, 'Reply delay', 600);
+    const replyDelayMs = parseSecondsToMilliseconds(seconds, 'Reply delay', 600, 0.1);
     return this.update(accountKey, { replyDelayMs }, 'reply_delay_updated');
   }
 
   public setAutoReaction(accountKey: string, enabled: boolean): AccountAutomationSettings {
     return this.update(accountKey, { autoReaction: enabled }, 'auto_reaction_updated');
+  }
+
+  public setReactionType(accountKey: string, value: string): AccountAutomationSettings {
+    const reactionType = parseTelegramReactionType(value);
+    return this.update(accountKey, { reactionType }, 'reaction_type_updated');
   }
 
   public setCooldown(accountKey: string, seconds: string): AccountAutomationSettings {
@@ -68,6 +74,7 @@ export function parseSecondsToMilliseconds(
   input: string,
   label: string,
   maximumSeconds: number,
+  minimumSeconds = 0,
 ): number {
   const normalized = input.trim();
   if (!/^\d+(?:\.\d+)?$/.test(normalized)) {
@@ -76,6 +83,9 @@ export function parseSecondsToMilliseconds(
   const seconds = Number(normalized);
   if (!Number.isFinite(seconds) || seconds < 0) {
     throw new Error(`${label} must be a non-negative number`);
+  }
+  if (seconds < minimumSeconds) {
+    throw new Error(`${label} must be at least ${minimumSeconds} seconds`);
   }
   if (seconds > maximumSeconds) {
     throw new Error(`${label} must not exceed ${maximumSeconds} seconds`);
@@ -100,3 +110,5 @@ export function parseNotificationTarget(input: string): string | null {
   if (/^-?\d+$/.test(normalized)) return normalized;
   throw new Error('Notification target must be a bot username (for example @MonitorBot) or numeric Telegram ID; send - to disable');
 }
+
+export { parseTelegramReactionType } from '../shared/telegram-reaction.js';

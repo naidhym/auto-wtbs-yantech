@@ -17,6 +17,10 @@ export class ReplyTemplateService {
     return this.repository.listForOwner(this.ownerTelegramId);
   }
 
+  public getActiveTemplate(accountKey: string): ReplyTemplateRecord | undefined {
+    return this.repository.getActive(this.ownerTelegramId, accountKey);
+  }
+
   public get(accountKey: string, templateId: number): ReplyTemplateRecord {
     const template = this.repository.get(this.ownerTelegramId, accountKey, templateId);
     if (template === undefined) throw new Error(`Reply template not found: ${templateId}`);

@@ -42,6 +42,10 @@ import { ReplyTemplateRepository } from '../src/rules/reply-template.repository.
 import { ReplyTemplateService } from '../src/rules/reply-template.service.js';
 import { RuleRepository } from '../src/rules/rule.repository.js';
 import type { TelegramChatKind, TelegramIncomingMessage } from '../src/rules/rule.types.js';
+import { Phase5ExecutionService } from '../src/reporting/phase5-execution.service.js';
+import type { ReplyResult } from '../src/reply/reply-result.js';
+import type { ReactionResult } from '../src/reaction/reaction-result.js';
+import type { ActionReportInput, ActionReportDelivery } from '../src/reporting/action-report.js';
 
 const OWNER = '123456789';
 const ACCOUNT_A = 'account-00000000-0000-4000-8000-000000000a01';
@@ -165,10 +169,16 @@ class BlockingScheduler implements DelayScheduler {
 }
 
 describe('M5 auto reply and safety', () => {
-  it('persists a monitoring-bot target independently for each account', () => {
+  it('persists notification and reaction settings independently for each account', () => {
     const harness = createHarness();
     harness.settings.setNotificationTarget(ACCOUNT_A, '@MonitorOneBot');
     harness.settings.setNotificationTarget(ACCOUNT_B, '@MonitorTwoBot');
+    harness.settings.setAutoReaction(ACCOUNT_A, true);
+    harness.settings.setAutoReaction(ACCOUNT_B, false);
+    harness.settings.setReactionType(ACCOUNT_A, '👍');
+    harness.settings.setReactionType(ACCOUNT_B, '🔥');
+    expect(() => harness.settings.setReactionType(ACCOUNT_A, '👍🔥'))
+      .toThrow(/one valid emoji/i);
 
     const reloaded = new AccountAutomationSettingsService(
       new AccountAutomationSettingsRepository(harness.connection),
@@ -177,6 +187,8 @@ describe('M5 auto reply and safety', () => {
     );
     expect(reloaded.get(ACCOUNT_A).notificationTarget).toBe('@MonitorOneBot');
     expect(reloaded.get(ACCOUNT_B).notificationTarget).toBe('@MonitorTwoBot');
+    expect(reloaded.get(ACCOUNT_A)).toMatchObject({ autoReaction: true, reactionType: '👍' });
+    expect(reloaded.get(ACCOUNT_B)).toMatchObject({ autoReaction: false, reactionType: '🔥' });
     harness.close();
   });
 
@@ -392,7 +404,7 @@ describe('M5 auto reply and safety', () => {
     harness.close();
   });
 
-  it('validates and stores zero, decimal, and 600-second custom delays', () => {
+  it('validates and stores 0.1, decimal, and 600-second custom delays', () => {
     const harness = createHarness();
     expect(parseSecondsToMilliseconds('0', 'Reply delay', 600)).toBe(0);
     expect(parseSecondsToMilliseconds('0.01', 'Reply delay', 600)).toBe(10);
@@ -401,7 +413,9 @@ describe('M5 auto reply and safety', () => {
     expect(parseSecondsToMilliseconds('600', 'Reply delay', 600)).toBe(600_000);
     expect(() => parseSecondsToMilliseconds('-1', 'Reply delay', 600)).toThrow(/non-negative/i);
     expect(() => parseSecondsToMilliseconds('600.01', 'Reply delay', 600)).toThrow(/exceed/i);
-    expect(harness.settings.setReplyDelay(ACCOUNT_A, '0.01').replyDelayMs).toBe(10);
+    expect(() => harness.settings.setReplyDelay(ACCOUNT_A, '0')).toThrow(/at least 0\.1/i);
+    expect(() => harness.settings.setReplyDelay(ACCOUNT_A, '0.01')).toThrow(/at least 0\.1/i);
+    expect(harness.settings.setReplyDelay(ACCOUNT_A, '0.1').replyDelayMs).toBe(100);
     expect(harness.settings.setReplyDelay(ACCOUNT_B, '600').replyDelayMs).toBe(600_000);
     harness.close();
   });
@@ -667,6 +681,112 @@ describe('M5 auto reply and safety', () => {
     harness.close();
   });
 
+
+  it('Phase 6 wires live reply output into Phase5 reaction and Saved Messages reporting exactly once', async () => {
+    const harness = createHarness();
+    const reactionReplies: ReplyResult[] = [];
+    const reportInputs: ActionReportInput[] = [];
+    const phase5 = new Phase5ExecutionService(
+      {
+        execute(reply) {
+          reactionReplies.push(reply);
+          const reaction: ReactionResult = {
+            status: 'sent',
+            attempted: true,
+            success: true,
+            reactionType: '👍',
+            ...(reply.replyMessageId === undefined ? {} : { targetMessageId: reply.replyMessageId }),
+            executedAt: '2026-08-27T00:00:00.000Z',
+          };
+          return Promise.resolve(reaction);
+        },
+      },
+      {
+        report(input) {
+          reportInputs.push(input);
+          const delivery: ActionReportDelivery = {
+            delivered: true,
+            destination: 'saved_messages',
+            accountId: input.reply.accountId,
+            accountKey: ACCOUNT_A,
+            deliveredAt: '2026-08-27T00:00:00.000Z',
+          };
+          return Promise.resolve(delivery);
+        },
+      },
+    );
+    const processor = harness.createProcessor(phase5);
+
+    await processor.process(harness.input(1, 1, {
+      text: 'bucin',
+      sourceMessageId: 230,
+      senderDisplayName: 'Seller Display',
+    }));
+
+    expect(reactionReplies).toHaveLength(1);
+    expect(reactionReplies[0]).toMatchObject({
+      success: true,
+      accountId: 1,
+      channelId: 1,
+      sourceMessageId: 230,
+      replyMessageId: 5001,
+    });
+    expect(reportInputs).toHaveLength(1);
+    expect(reportInputs[0]?.reaction.targetMessageId).toBe(5001);
+    expect(reportInputs[0]?.context.senderDisplayName).toBe('Seller Display');
+    expect(harness.telegram.reactions).toHaveLength(0);
+    expect(harness.notifier.notifications).toHaveLength(0);
+    expect(harness.eventTypes()).toContain('reaction_sent');
+    expect(harness.eventTypes()).toContain('action_report');
+    harness.close();
+  });
+
+  it('Phase 6 reports a failed live reply once and never attempts a legacy duplicate reaction', async () => {
+    const harness = createHarness();
+    harness.telegram.failureReasons.set(ACCOUNT_A, 'CHAT_WRITE_FORBIDDEN');
+    const reactionReplies: ReplyResult[] = [];
+    const reportInputs: ActionReportInput[] = [];
+    const phase5 = new Phase5ExecutionService(
+      {
+        execute(reply) {
+          reactionReplies.push(reply);
+          const reaction: ReactionResult = {
+            status: 'not_applicable',
+            attempted: false,
+            success: false,
+            skippedReason: 'reply_failed',
+            executedAt: '2026-08-27T00:00:00.000Z',
+          };
+          return Promise.resolve(reaction);
+        },
+      },
+      {
+        report(input) {
+          reportInputs.push(input);
+          return Promise.resolve({
+            delivered: true,
+            destination: 'saved_messages',
+            accountId: input.reply.accountId,
+            accountKey: ACCOUNT_A,
+            deliveredAt: '2026-08-27T00:00:00.000Z',
+          });
+        },
+      },
+    );
+    const processor = harness.createProcessor(phase5);
+
+    await processor.process(harness.input(1, 1, { text: 'bucin', sourceMessageId: 231 }));
+
+    expect(reactionReplies).toHaveLength(1);
+    expect(reactionReplies[0]).toMatchObject({ success: false, sourceMessageId: 231 });
+    expect(reportInputs).toHaveLength(1);
+    expect(reportInputs[0]?.reaction.status).toBe('not_applicable');
+    expect(harness.telegram.reactions).toHaveLength(0);
+    expect(harness.notifier.notifications).toHaveLength(0);
+    expect(harness.eventTypes().filter((eventType) => eventType === 'action_report')).toHaveLength(1);
+    harness.close();
+  });
+
   it('cancels and drains a pending delayed reply before storage/logger shutdown', async () => {
     const scheduler = new BlockingScheduler();
     const harness = createHarness(scheduler);
@@ -763,7 +883,7 @@ function createHarness(scheduler: DelayScheduler = new ImmediateScheduler()) {
   const safetyNotifier = new FakeSafetyNotifier();
   const dispatches = new AutomationDispatchRepository(connection);
 
-  const createProcessor = () => new AutoReplyService(
+  const createProcessor = (phase5?: Phase5ExecutionService) => new AutoReplyService(
     detection,
     safety,
     channels,
@@ -778,6 +898,8 @@ function createHarness(scheduler: DelayScheduler = new ImmediateScheduler()) {
     OWNER,
     logger.logger,
     scheduler,
+    undefined,
+    phase5,
   );
   const processor = createProcessor();
   listeners.setProcessor(processor);

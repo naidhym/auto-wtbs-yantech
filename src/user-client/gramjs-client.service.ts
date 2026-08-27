@@ -10,6 +10,10 @@ import type {
 } from '../channels/channel.types.js';
 import type { TelegramIncomingMessage, TelegramSenderDisplayName } from '../rules/rule.types.js';
 import { errorReason, type AppLogger } from '../logging/logger.js';
+import {
+  normalizeTelegramReactionType,
+  parseTelegramReactionType,
+} from '../shared/telegram-reaction.js';
 import { TelegramUpdateEngine, type TelegramEngineStatus } from './telegram-update.engine.js';
 import { TelegramChannelSyncStateRepository } from './telegram-channel-sync-state.repository.js';
 
@@ -66,6 +70,7 @@ export interface TelegramClientAdapter {
   reactToChannelMessage(
     identifier: string,
     replyMessageId: number,
+    reactionType?: string,
   ): Promise<TelegramReactionResult>;
   sendOperationalNotification(
     target: string,
@@ -131,6 +136,7 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
   );
   let backgroundErrorHandler: (error: unknown) => Promise<void> = () => Promise.resolve();
   let listenerRegistrationCount = 0;
+  const sentReplyMessages = new Map<string, Api.Message>();
   const reportBackgroundError = async (error: unknown): Promise<void> => {
     try {
       await backgroundErrorHandler(error);
@@ -247,14 +253,24 @@ const defaultClientFactory: TelegramClientFactory = (options, logger, nativeClie
         commentTo: sourceMessageId,
         linkPreview: false,
       });
+      rememberSentReplyMessage(sentReplyMessages, identifier, sent);
       return {
         messageId: sent.id,
         resolveMessageLink: () => buildTelegramMessageLink(sent),
       };
     },
-    async reactToChannelMessage(identifier, replyMessageId) {
-      const entity = await resolveBroadcastChannel(client, identifier);
-      return reactToChannelMessage(client, entity, replyMessageId);
+    async reactToChannelMessage(identifier, replyMessageId, reactionType = '❤️') {
+      const key = replyReactionContextKey(identifier, replyMessageId);
+      const sentReply = sentReplyMessages.get(key);
+      if (sentReply === undefined) {
+        throw new Error('Exact Telegram peer for the sent reply is unavailable');
+      }
+      sentReplyMessages.delete(key);
+      const targetChat = await sentReply.getChat();
+      if (!(targetChat instanceof Api.Channel) && !(targetChat instanceof Api.Chat)) {
+        throw new Error('Sent reply did not resolve to a reaction-capable Telegram chat');
+      }
+      return reactToTelegramMessage(client, targetChat, replyMessageId, reactionType);
     },
     async sendOperationalNotification(target, notification) {
       await client.sendMessage(target, createTelegramNotificationPayload(notification));
@@ -391,10 +407,11 @@ export class GramJsClientService {
   public reactToChannelMessage(
     identifier: string,
     replyMessageId: number,
+    reactionType = '❤️',
   ): Promise<TelegramReactionResult> {
     return this.enqueue(async () => {
       if (!this.getStatus().connected) throw new Error('Telegram client is not connected');
-      return this.client.reactToChannelMessage(identifier, replyMessageId);
+      return this.client.reactToChannelMessage(identifier, replyMessageId, reactionType);
     });
   }
 
@@ -593,6 +610,14 @@ function permissionNames(rights: unknown): readonly string[] | undefined {
 export function evaluateHeartReactionCapability(
   availableReactions: Api.TypeChatReactions | undefined,
 ): { readonly supported: boolean; readonly reason?: string } {
+  return evaluateReactionCapability(availableReactions, '❤️');
+}
+
+export function evaluateReactionCapability(
+  availableReactions: Api.TypeChatReactions | undefined,
+  reactionType: string,
+): { readonly supported: boolean; readonly reason?: string } {
+  const normalizedReaction = normalizeTelegramReactionType(reactionType);
   if (
     availableReactions === undefined ||
     availableReactions instanceof Api.ChatReactionsNone
@@ -602,25 +627,37 @@ export function evaluateHeartReactionCapability(
   if (availableReactions instanceof Api.ChatReactionsAll) {
     return { supported: true };
   }
-  const heartAvailable = availableReactions.reactions.some((reaction) =>
-    reaction instanceof Api.ReactionEmoji && normalizeReactionEmoji(reaction.emoticon) === '❤'
+  const configuredReactionAvailable = availableReactions.reactions.some((reaction) =>
+    reaction instanceof Api.ReactionEmoji &&
+      normalizeTelegramReactionType(reaction.emoticon) === normalizedReaction
   );
-  return heartAvailable
+  return configuredReactionAvailable
     ? { supported: true }
-    : { supported: false, reason: 'heart_reaction_unavailable' };
+    : { supported: false, reason: 'configured_reaction_unavailable' };
 }
 
 export function createHeartReactionRequest(
   peer: Api.TypeEntityLike,
-  sourceMessageId: number,
+  targetMessageId: number,
 ): Api.messages.SendReaction {
-  if (!Number.isSafeInteger(sourceMessageId) || sourceMessageId < 1) {
-    throw new Error('Source channel message ID is invalid');
+  return createEmojiReactionRequest(peer, targetMessageId, '❤️');
+}
+
+export function createEmojiReactionRequest(
+  peer: Api.TypeEntityLike,
+  targetMessageId: number,
+  reactionType: string,
+): Api.messages.SendReaction {
+  if (!Number.isSafeInteger(targetMessageId) || targetMessageId < 1) {
+    throw new Error('Reaction target message ID is invalid');
   }
+  const configuredReaction = parseTelegramReactionType(reactionType);
   return new Api.messages.SendReaction({
     peer,
-    msgId: sourceMessageId,
-    reaction: [new Api.ReactionEmoji({ emoticon: '❤' })],
+    msgId: targetMessageId,
+    reaction: [new Api.ReactionEmoji({
+      emoticon: normalizeTelegramReactionType(configuredReaction),
+    })],
   });
 }
 
@@ -628,20 +665,31 @@ export async function reactToChannelMessage(
   client: TelegramClient,
   channel: Api.Channel,
   replyMessageId: number,
+  reactionType = '❤️',
+): Promise<TelegramReactionResult> {
+  return reactToTelegramMessage(client, channel, replyMessageId, reactionType);
+}
+
+export async function reactToTelegramMessage(
+  client: TelegramClient,
+  targetChat: Api.Channel | Api.Chat,
+  replyMessageId: number,
+  reactionType: string,
 ): Promise<TelegramReactionResult> {
   if (!Number.isSafeInteger(replyMessageId) || replyMessageId < 1) {
     throw new Error('Reply message ID is invalid');
   }
-  const fullChannel = await client.invoke(new Api.channels.GetFullChannel({ channel }));
-  const capability = evaluateHeartReactionCapability(fullChannel.fullChat.availableReactions);
+  const configuredReaction = parseTelegramReactionType(reactionType);
+  const availableReactions = await resolveAvailableReactions(client, targetChat);
+  const capability = evaluateReactionCapability(availableReactions, configuredReaction);
   if (!capability.supported) {
     return {
       status: 'skipped',
-      reason: capability.reason ?? 'heart_reaction_unavailable',
+      reason: capability.reason ?? 'configured_reaction_unavailable',
     };
   }
-  const peer = await client.getInputEntity(channel);
-  await client.invoke(createHeartReactionRequest(peer, replyMessageId));
+  const peer = await client.getInputEntity(targetChat);
+  await client.invoke(createEmojiReactionRequest(peer, replyMessageId, configuredReaction));
   return { status: 'sent' };
 }
 
@@ -791,6 +839,34 @@ function uniqueSenderDisplayNames(
   });
 }
 
-function normalizeReactionEmoji(emoji: string): string {
-  return emoji.replaceAll('\uFE0F', '');
+async function resolveAvailableReactions(
+  client: TelegramClient,
+  targetChat: Api.Channel | Api.Chat,
+): Promise<Api.TypeChatReactions | undefined> {
+  if (targetChat instanceof Api.Channel) {
+    const fullChannel = await client.invoke(
+      new Api.channels.GetFullChannel({ channel: targetChat }),
+    );
+    return fullChannel.fullChat.availableReactions;
+  }
+  const fullChat = await client.invoke(
+    new Api.messages.GetFullChat({ chatId: targetChat.id }),
+  );
+  return fullChat.fullChat.availableReactions;
+}
+
+function replyReactionContextKey(identifier: string, replyMessageId: number): string {
+  return `${identifier}\u0000${replyMessageId}`;
+}
+
+function rememberSentReplyMessage(
+  cache: Map<string, Api.Message>,
+  identifier: string,
+  message: Api.Message,
+): void {
+  cache.set(replyReactionContextKey(identifier, message.id), message);
+  if (cache.size > 10_000) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey !== undefined) cache.delete(oldestKey);
+  }
 }

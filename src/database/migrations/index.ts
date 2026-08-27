@@ -8,6 +8,8 @@ import { perAccountDispatchDeduplicationMigration } from './0007-per-account-dis
 import { accountNotificationTargetMigration } from './0008-account-notification-target.js';
 import { telegramChannelSyncStateMigration } from './0009-telegram-channel-sync-state.js';
 import { resetChannelsForRedesignMigration } from './0010-reset-channels-for-redesign.js';
+import { replyExecutionConfigurationMigration } from './0011-reply-execution-configuration.js';
+import { reactionConfigurationMigration } from './0012-reaction-configuration.js';
 import type { Migration } from './types.js';
 
 export const migrations: readonly Migration[] = [
@@ -21,4 +23,6 @@ export const migrations: readonly Migration[] = [
   accountNotificationTargetMigration,
   telegramChannelSyncStateMigration,
   resetChannelsForRedesignMigration,
+  replyExecutionConfigurationMigration,
+  reactionConfigurationMigration,
 ];

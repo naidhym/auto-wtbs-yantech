@@ -42,7 +42,7 @@ describe('database foundation', () => {
 
     const first = new DatabaseService(databasePath, loggerHandle.logger);
     first.initialize();
-    expect(first.getMigrationVersion()).toBe(10);
+    expect(first.getMigrationVersion()).toBe(12);
     expect(first.getTableNames()).toEqual(
       [...FOUNDATION_TABLES, 'schema_migrations'].sort(),
     );
@@ -64,6 +64,9 @@ describe('database foundation', () => {
       INSERT INTO accounts (id, owner_id, label, session_key, phone_number) VALUES
         (1, 1, 'Account A', 'account-00000000-0000-4000-8000-000000000701', '+628111111111'),
         (2, 1, 'Account B', 'account-00000000-0000-4000-8000-000000000702', '+628222222222');
+      INSERT INTO account_automation_settings (account_id) VALUES (1), (2);
+      INSERT INTO reply_templates (account_id, name, body, is_enabled)
+      VALUES (1, 'Primary', 'Account A reply', 1);
       INSERT INTO channels (id, telegram_channel_id, title) VALUES (1, '7001', 'Dispatch Channel');
       INSERT INTO automation_dispatches (
         account_id, channel_id, source_message_id, matched_trigger, delay_ms, status
@@ -71,6 +74,16 @@ describe('database foundation', () => {
         (1, 1, 77, 'bucin', 0, 'scheduled'),
         (2, 1, 77, 'bucin', 0, 'scheduled');
     `);
+    expect(first.getConnection().prepare(`
+      SELECT reply_delay_ms FROM account_automation_settings WHERE account_id = 1
+    `).get()).toEqual({ reply_delay_ms: 100 });
+    expect(() => first.getConnection().prepare(`
+      UPDATE account_automation_settings SET reply_delay_ms = 99 WHERE account_id = 1
+    `).run()).toThrow(/CHECK constraint failed/i);
+    expect(() => first.getConnection().prepare(`
+      INSERT INTO reply_templates (account_id, name, body, is_enabled)
+      VALUES (1, 'Second active', 'Must be rejected', 1)
+    `).run()).toThrow(/UNIQUE constraint failed/i);
     expect(() => first.getConnection().prepare(`
       INSERT INTO automation_dispatches (
         account_id, channel_id, source_message_id, matched_trigger, delay_ms, status
@@ -80,7 +93,7 @@ describe('database foundation', () => {
 
     const second = new DatabaseService(databasePath, loggerHandle.logger);
     second.initialize();
-    expect(second.getMigrationVersion()).toBe(10);
+    expect(second.getMigrationVersion()).toBe(12);
     expect(second.getTableNames()).toEqual(
       [...FOUNDATION_TABLES, 'schema_migrations'].sort(),
     );
@@ -280,7 +293,7 @@ describe('database foundation', () => {
     const service = new DatabaseService(databasePath, logger.logger);
     service.initialize();
     const connection = service.getConnection();
-    expect(service.getMigrationVersion()).toBe(10);
+    expect(service.getMigrationVersion()).toBe(12);
     expect(connection.prepare('SELECT COUNT(*) AS count FROM channels').get())
       .toEqual({ count: 1 });
     expect(connection.prepare('SELECT COUNT(*) AS count FROM account_channels').get())
@@ -294,7 +307,7 @@ describe('database foundation', () => {
 
     const reopened = new DatabaseService(databasePath, logger.logger);
     reopened.initialize();
-    expect(reopened.getMigrationVersion()).toBe(10);
+    expect(reopened.getMigrationVersion()).toBe(12);
     expect(reopened.getConnection().prepare('SELECT COUNT(*) AS count FROM account_channels').get())
       .toEqual({ count: 2 });
     reopened.close();
@@ -343,7 +356,7 @@ describe('database foundation', () => {
     const service = new DatabaseService(databasePath, logger.logger);
     service.initialize();
     const connection = service.getConnection();
-    expect(service.getMigrationVersion()).toBe(10);
+    expect(service.getMigrationVersion()).toBe(12);
     expect(connection.prepare(`
       SELECT id, account_id, name, body, is_enabled FROM reply_templates WHERE id = 7
     `).get()).toEqual({
@@ -384,11 +397,10 @@ describe('database foundation', () => {
 
     const reopened = new DatabaseService(databasePath, logger.logger);
     reopened.initialize();
-    expect(reopened.getMigrationVersion()).toBe(10);
+    expect(reopened.getMigrationVersion()).toBe(12);
     expect(reopened.getConnection().prepare('SELECT COUNT(*) AS count FROM rules').get())
       .toEqual({ count: 1 });
     reopened.close();
     logger.close();
   });
 });
-

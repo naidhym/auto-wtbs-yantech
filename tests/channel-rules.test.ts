@@ -96,6 +96,24 @@ describe('M4 rules, templates, and channel-only detection', () => {
     harness.close();
   });
 
+  it('keeps exactly one active reply template per configured account', () => {
+    const harness = createHarness();
+    const first = harness.templates.create(ACCOUNT_KEY, 'Primary', 'Primary body');
+    const second = harness.templates.create(ACCOUNT_KEY, 'Backup', 'Backup body');
+
+    expect(first.enabled).toBe(true);
+    expect(second.enabled).toBe(false);
+    expect(harness.templates.getActiveTemplate(ACCOUNT_KEY)?.id).toBe(first.id);
+
+    expect(harness.templates.setEnabled(ACCOUNT_KEY, second.id, true).enabled).toBe(true);
+    expect(harness.templates.get(ACCOUNT_KEY, first.id).enabled).toBe(false);
+    expect(harness.templates.getActiveTemplate(ACCOUNT_KEY)?.id).toBe(second.id);
+
+    harness.templates.remove(ACCOUNT_KEY, second.id);
+    expect(harness.templates.getActiveTemplate(ACCOUNT_KEY)?.id).toBe(first.id);
+    harness.close();
+  });
+
   it('isolates reply templates by account and validates rule/template assignment', () => {
     const harness = createHarness();
     harness.connection.prepare(`

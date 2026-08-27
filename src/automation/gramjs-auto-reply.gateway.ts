@@ -1,6 +1,11 @@
 import { AccountService } from '../accounts/account.service.js';
 import { TelegramClientRegistry } from '../user-client/telegram-client.registry.js';
 import type {
+  ReplyReactionAttempt,
+  ReplyReactionGateway,
+  ReplyReactionTarget,
+} from '../reaction/reaction-result.js';
+import type {
   AccountNotification,
   AccountNotificationGateway,
   AutoReplyGateway,
@@ -45,6 +50,33 @@ export class GramJsAutoReplyGateway implements AutoReplyGateway {
       throw new Error(`Account ${account.nickname} is not connected`);
     }
     return client;
+  }
+}
+
+export class GramJsReplyReactionGateway implements ReplyReactionGateway {
+  public constructor(
+    private readonly accounts: AccountService,
+    private readonly clients: TelegramClientRegistry,
+  ) {}
+
+  public async reactToReply(
+    accountKey: string,
+    target: ReplyReactionTarget,
+  ): Promise<ReplyReactionAttempt> {
+    const account = this.accounts.get(accountKey);
+    if (!account.enabled) throw new Error(`Account ${account.nickname} is disabled`);
+    const client = this.clients.get(accountKey);
+    if (client === undefined || !client.getStatus().connected) {
+      throw new Error(`Account ${account.nickname} is not connected`);
+    }
+    const result = await client.reactToChannelMessage(
+      target.channelIdentifier,
+      target.replyMessageId,
+      target.reactionType,
+    );
+    return result.status === 'sent'
+      ? { status: 'sent' }
+      : { status: 'unavailable', reason: result.reason ?? 'configured_reaction_unavailable' };
   }
 }
 

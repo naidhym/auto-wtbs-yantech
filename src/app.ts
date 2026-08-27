@@ -8,6 +8,7 @@ import type { OwnerNotificationGateway } from './automation/automation.types.js'
 import {
   GramJsAccountNotificationGateway,
   GramJsAutoReplyGateway,
+  GramJsReplyReactionGateway,
 } from './automation/gramjs-auto-reply.gateway.js';
 import { AccountManagerService } from './accounts/account-manager.service.js';
 import { AccountRepository } from './accounts/account.repository.js';
@@ -30,6 +31,11 @@ import { DetectionService } from './rules/detection.service.js';
 import { DetectionPipelineService } from './rules/detection-pipeline.service.js';
 import { GlobalDetectionService } from './rules/global-detection.service.js';
 import { GlobalKeywordService } from './rules/global-keyword.service.js';
+import { ReactionConfigurationService } from './reaction/reaction-configuration.service.js';
+import { ReactionExecutor } from './reaction/reaction.executor.js';
+import { ActionReporter } from './reporting/action-reporter.js';
+import { GramJsSavedMessagesGateway } from './reporting/gramjs-saved-messages.gateway.js';
+import { Phase5ExecutionService } from './reporting/phase5-execution.service.js';
 import { ReplyTemplateRepository } from './rules/reply-template.repository.js';
 import { ReplyTemplateService } from './rules/reply-template.service.js';
 import { RuleRepository } from './rules/rule.repository.js';
@@ -204,6 +210,24 @@ export class AutoWtbApplication {
         const safetyNotifications: OwnerNotificationGateway = {
           notify: (notification) => this.adminBot?.notifyOwner(notification) ?? Promise.resolve(false),
         };
+        const autoReplyGateway = new GramJsAutoReplyGateway(accountService, this.telegramClients);
+        const reactionConfiguration = new ReactionConfigurationService(
+          accountService,
+          channelRepository,
+          this.automationSettings,
+        );
+        const reactionExecutor = new ReactionExecutor(
+          reactionConfiguration,
+          new GramJsReplyReactionGateway(accountService, this.telegramClients),
+          this.loggerHandle.logger,
+        );
+        const actionReporter = new ActionReporter(
+          accountService,
+          channelRepository,
+          new GramJsSavedMessagesGateway(accountService, this.telegramClients),
+          this.loggerHandle.logger,
+        );
+        const phase5Execution = new Phase5ExecutionService(reactionExecutor, actionReporter);
         const autoReply = new AutoReplyService(
           detectionPipeline,
           this.automationSafety,
@@ -212,12 +236,15 @@ export class AutoWtbApplication {
           this.replyTemplateService,
           this.automationSettings,
           new AutomationDispatchRepository(this.database.getConnection()),
-          new GramJsAutoReplyGateway(accountService, this.telegramClients),
+          autoReplyGateway,
           new GramJsAccountNotificationGateway(accountService, this.telegramClients),
           safetyNotifications,
           eventLogs,
           this.config.adminBot.ownerTelegramId,
           this.loggerHandle.logger,
+          undefined,
+          undefined,
+          phase5Execution,
         );
         this.autoReply = autoReply;
         channelListeners.setProcessor(autoReply);

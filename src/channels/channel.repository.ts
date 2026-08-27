@@ -78,6 +78,29 @@ export class ChannelRepository {
     return row === undefined ? undefined : mapChannel(row);
   }
 
+  public get(channelId: number): ChannelRecord | undefined {
+    const row = this.database.prepare(`SELECT ${CHANNEL_COLUMNS} FROM channels WHERE id = ?`)
+      .get(channelId) as unknown as ChannelRow | undefined;
+    return row === undefined ? undefined : mapChannel(row);
+  }
+
+  public create(data: {
+    telegramChannelId: string;
+    title: string;
+    username?: string | undefined;
+  }): ChannelRecord {
+    this.database.prepare(`
+      INSERT INTO channels (telegram_channel_id, username, title, is_enabled, status)
+      VALUES (?, ?, ?, 1, 'pending')
+    `).run(data.telegramChannelId, data.username ?? null, data.title);
+    
+    const channel = this.getByTelegramId(data.telegramChannelId);
+    if (channel === undefined) {
+      throw new Error('Failed to create channel');
+    }
+    return channel;
+  }
+
   public saveResolved(channel: ResolvedTelegramChannel): ChannelRecord {
     this.database.prepare(`
       INSERT INTO channels (telegram_channel_id, username, title, is_enabled, status)

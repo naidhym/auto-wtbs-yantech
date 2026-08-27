@@ -8,6 +8,7 @@ interface SettingsRow {
   label: string;
   reply_delay_ms: number;
   auto_reaction: number;
+  reaction_type: string;
   cooldown_ms: number;
   hourly_limit: number;
   daily_limit: number;
@@ -22,6 +23,7 @@ const SELECT_SETTINGS = `
     a.label,
     s.reply_delay_ms,
     s.auto_reaction,
+    s.reaction_type,
     s.cooldown_ms,
     s.hourly_limit,
     s.daily_limit,
@@ -49,6 +51,7 @@ export class AccountAutomationSettingsRepository {
     input: {
       readonly replyDelayMs?: number;
       readonly autoReaction?: boolean;
+      readonly reactionType?: string;
       readonly cooldownMs?: number;
       readonly hourlyLimit?: number;
       readonly dailyLimit?: number;
@@ -60,6 +63,7 @@ export class AccountAutomationSettingsRepository {
       UPDATE account_automation_settings SET
         reply_delay_ms = COALESCE(?, reply_delay_ms),
         auto_reaction = COALESCE(?, auto_reaction),
+        reaction_type = COALESCE(?, reaction_type),
         cooldown_ms = COALESCE(?, cooldown_ms),
         hourly_limit = COALESCE(?, hourly_limit),
         daily_limit = COALESCE(?, daily_limit),
@@ -73,6 +77,7 @@ export class AccountAutomationSettingsRepository {
     `).run(
       input.replyDelayMs ?? null,
       input.autoReaction === undefined ? null : input.autoReaction ? 1 : 0,
+      input.reactionType ?? null,
       input.cooldownMs ?? null,
       input.hourlyLimit ?? null,
       input.dailyLimit ?? null,
@@ -104,6 +109,7 @@ function mapSettings(row: SettingsRow): AccountAutomationSettings {
     accountNickname: row.label,
     replyDelayMs: row.reply_delay_ms,
     autoReaction: row.auto_reaction === 1,
+    reactionType: row.reaction_type,
     cooldownMs: row.cooldown_ms,
     hourlyLimit: row.hourly_limit,
     dailyLimit: row.daily_limit,

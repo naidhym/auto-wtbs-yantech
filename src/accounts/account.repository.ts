@@ -99,6 +99,14 @@ export class AccountRepository {
     return row === undefined ? undefined : mapAccountRow(row);
   }
 
+  public getById(accountId: number): AccountRecord | undefined {
+    const row = this.database
+      .prepare(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE id = ?`)
+      .get(accountId) as unknown as AccountRow | undefined;
+
+    return row === undefined ? undefined : mapAccountRow(row);
+  }
+
   public getByKeyForOwner(
     ownerTelegramId: string,
     accountKey: string,

@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
+import { runInTransaction } from '../database/transaction.js';
 import type { ReplyTemplateRecord } from './rule.types.js';
 
 interface TemplateRow {
@@ -46,6 +47,19 @@ export class ReplyTemplateRepository {
       WHERE o.telegram_user_id = ? AND o.is_active = 1
       ORDER BY a.label COLLATE NOCASE, a.id, rt.name COLLATE NOCASE, rt.id
     `).all(ownerTelegramId).map((row) => mapTemplate(row as unknown as TemplateRow));
+  }
+
+  public getActive(
+    ownerTelegramId: string,
+    accountKey: string,
+  ): ReplyTemplateRecord | undefined {
+    const row = this.database.prepare(`${SELECT_TEMPLATE}
+      WHERE a.session_key = ? AND o.telegram_user_id = ? AND o.is_active = 1
+        AND rt.is_enabled = 1
+      ORDER BY rt.id
+      LIMIT 1
+    `).get(accountKey, ownerTelegramId) as unknown as TemplateRow | undefined;
+    return row === undefined ? undefined : mapTemplate(row);
   }
 
   public get(
@@ -99,7 +113,13 @@ export class ReplyTemplateRepository {
   ): ReplyTemplateRecord {
     const result = this.database.prepare(`
       INSERT INTO reply_templates (account_id, name, body, is_enabled)
-      SELECT a.id, ?, ?, 1
+      SELECT a.id, ?, ?, CASE
+        WHEN EXISTS (
+          SELECT 1 FROM reply_templates active
+          WHERE active.account_id = a.id AND active.is_enabled = 1
+        ) THEN 0
+        ELSE 1
+      END
       FROM accounts a JOIN owners o ON o.id = a.owner_id
       WHERE a.session_key = ? AND o.telegram_user_id = ? AND o.is_active = 1
     `).run(name, body, accountKey, ownerTelegramId);
@@ -132,26 +152,55 @@ export class ReplyTemplateRepository {
     templateId: number,
     enabled: boolean,
   ): ReplyTemplateRecord {
-    const result = this.database.prepare(`
-      UPDATE reply_templates SET is_enabled = ?,
-        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE id = ? AND account_id = (
-        SELECT a.id FROM accounts a JOIN owners o ON o.id = a.owner_id
-        WHERE a.session_key = ? AND o.telegram_user_id = ? AND o.is_active = 1
-      )
-    `).run(enabled ? 1 : 0, templateId, accountKey, ownerTelegramId);
-    assertChanged(result.changes, 'Reply template', templateId);
-    return this.require(ownerTelegramId, accountKey, templateId);
+    return runInTransaction(this.database, () => {
+      if (enabled) {
+        this.database.prepare(`
+          UPDATE reply_templates SET is_enabled = 0,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          WHERE id <> ? AND account_id = (
+            SELECT a.id FROM accounts a JOIN owners o ON o.id = a.owner_id
+            WHERE a.session_key = ? AND o.telegram_user_id = ? AND o.is_active = 1
+          )
+        `).run(templateId, accountKey, ownerTelegramId);
+      }
+      const result = this.database.prepare(`
+        UPDATE reply_templates SET is_enabled = ?,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id = ? AND account_id = (
+          SELECT a.id FROM accounts a JOIN owners o ON o.id = a.owner_id
+          WHERE a.session_key = ? AND o.telegram_user_id = ? AND o.is_active = 1
+        )
+      `).run(enabled ? 1 : 0, templateId, accountKey, ownerTelegramId);
+      assertChanged(result.changes, 'Reply template', templateId);
+      return this.require(ownerTelegramId, accountKey, templateId);
+    });
   }
 
   public remove(ownerTelegramId: string, accountKey: string, templateId: number): void {
-    const result = this.database.prepare(`
-      DELETE FROM reply_templates WHERE id = ? AND account_id = (
-        SELECT a.id FROM accounts a JOIN owners o ON o.id = a.owner_id
-        WHERE a.session_key = ? AND o.telegram_user_id = ? AND o.is_active = 1
-      )
-    `).run(templateId, accountKey, ownerTelegramId);
-    assertChanged(result.changes, 'Reply template', templateId);
+    runInTransaction(this.database, () => {
+      const result = this.database.prepare(`
+        DELETE FROM reply_templates WHERE id = ? AND account_id = (
+          SELECT a.id FROM accounts a JOIN owners o ON o.id = a.owner_id
+          WHERE a.session_key = ? AND o.telegram_user_id = ? AND o.is_active = 1
+        )
+      `).run(templateId, accountKey, ownerTelegramId);
+      assertChanged(result.changes, 'Reply template', templateId);
+      this.database.prepare(`
+        UPDATE reply_templates SET is_enabled = 1,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id = (
+          SELECT MIN(candidate.id)
+          FROM reply_templates candidate
+          JOIN accounts a ON a.id = candidate.account_id
+          JOIN owners o ON o.id = a.owner_id
+          WHERE a.session_key = ? AND o.telegram_user_id = ? AND o.is_active = 1
+            AND NOT EXISTS (
+              SELECT 1 FROM reply_templates active
+              WHERE active.account_id = candidate.account_id AND active.is_enabled = 1
+            )
+        )
+      `).run(accountKey, ownerTelegramId);
+    });
   }
 
   private require(

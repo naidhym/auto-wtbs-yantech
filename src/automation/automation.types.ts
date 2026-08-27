@@ -4,6 +4,7 @@ export interface AccountAutomationSettings {
   readonly accountNickname: string;
   readonly replyDelayMs: number;
   readonly autoReaction: boolean;
+  readonly reactionType: string;
   readonly cooldownMs: number;
   readonly hourlyLimit: number;
   readonly dailyLimit: number;

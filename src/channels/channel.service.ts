@@ -204,6 +204,82 @@ export class ChannelService {
   }
   public shutdown(): Promise<void> { return this.listeners.shutdown(); }
 
+  /**
+   * Create a channel from resolved Telegram entity data
+   * Used by bulk channel manager
+   */
+  public createChannel(data: {
+    telegramChannelId: string;
+    title: string;
+    username?: string;
+  }): ChannelRecord {
+    const existing = this.repository.getByTelegramId(data.telegramChannelId);
+    if (existing !== undefined) {
+      throw new Error(`Channel already exists: ${data.title}`);
+    }
+
+    const channel = this.repository.create({
+      telegramChannelId: data.telegramChannelId,
+      username: data.username,
+      title: data.title,
+    });
+
+    this.logger.info(
+      {
+        channel: channel.id,
+        telegramChannelId: data.telegramChannelId,
+        action: 'channel_create',
+        status: 'created',
+      },
+      'Channel created',
+    );
+
+    return channel;
+  }
+
+  /**
+   * Assign existing channel to account
+   * Used by bulk channel manager
+   */
+  public async assignChannelToAccount(
+    channelId: number,
+    accountId: number,
+  ): Promise<ChannelAssignmentRecord> {
+    const channel = this.repository.get(channelId);
+    if (channel === undefined) {
+      throw new Error(`Channel not found: ${channelId}`);
+    }
+
+    const account = this.accounts.getById(accountId);
+    if (account === undefined) {
+      throw new Error(`Account not found: ${accountId}`);
+    }
+
+    const existing = this.repository.getAssignment(accountId, channelId);
+    if (existing !== undefined) {
+      throw new Error(
+        `${account.label} is already assigned to ${channel.title}`,
+      );
+    }
+
+    const assignment = this.repository.assign(accountId, channelId);
+
+    this.logger.info(
+      {
+        account: account.accountKey,
+        channel: channelId,
+        action: 'channel_assign',
+        status: 'assigned',
+      },
+      'Account assigned to channel',
+    );
+
+    // Start listener for this assignment
+    await this.listeners.start(assignment, channel);
+
+    return assignment;
+  }
+
   private requireAssignment(assignmentId: number): ChannelAssignmentRecord {
     const assignment = this.repository.getAssignmentById(this.ownerTelegramId, assignmentId);
     if (assignment === undefined) throw new Error(`Channel assignment not found: ${assignmentId}`);

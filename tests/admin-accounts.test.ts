@@ -317,6 +317,7 @@ class FakeAutomationSettingsController implements AdminAccountAutomationControll
       accountNickname: account.nickname,
       replyDelayMs: 0,
       autoReaction: false,
+      reactionType: '❤️',
       cooldownMs: 0,
       hourlyLimit: 0,
       dailyLimit: 0,

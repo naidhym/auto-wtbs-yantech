@@ -6,6 +6,8 @@ import { DetectionPipelineService } from '../rules/detection-pipeline.service.js
 import { ReplyTemplateService } from '../rules/reply-template.service.js';
 import { RuleRepository } from '../rules/rule.repository.js';
 import type { ReplyTemplateRecord } from '../rules/rule.types.js';
+import type { ReplyResult } from '../reply/reply-result.js';
+import type { Phase5ExecutionService } from '../reporting/phase5-execution.service.js';
 import { createTelegramMessageLink } from '../user-client/gramjs-client.service.js';
 import { AccountAutomationSettingsService } from './account-automation-settings.service.js';
 import {
@@ -67,6 +69,7 @@ export class AutoReplyService implements ChannelMessageProcessor {
     private readonly logger: AppLogger,
     private readonly scheduler: DelayScheduler = defaultScheduler,
     private readonly now: () => Date = () => new Date(),
+    private readonly phase5?: Phase5ExecutionService,
   ) {}
 
   public async process(input: Parameters<ChannelMessageProcessor['process']>[0]): Promise<void> {
@@ -401,21 +404,52 @@ export class AutoReplyService implements ChannelMessageProcessor {
         'error',
       );
       const sourceMessageLink = this.createSourceMessageLink(channel, claim.sourceMessageId);
-      await this.notifyAccount(
-        selected.settings.accountKey,
-        {
-          type: 'reply_failed',
-          accountNickname: selected.settings.accountNickname,
-          channelTitle: input.channel.title,
-          reason,
-          trigger: claim.matchedTrigger,
+      if (this.phase5 !== undefined) {
+        const failedReply: ReplyResult = {
+          success: false,
+          accountId: selected.settings.accountId,
+          channelId: input.channel.id,
           sourceMessageId: claim.sourceMessageId,
-          ...(sourceMessageLink === undefined ? {} : { sourceMessageLink }),
-        },
-        selected.settings.accountId,
-        input.channel.id,
-        claim.sourceMessageId,
-      );
+          matchedTriggers: [claim.matchedTrigger],
+          errorCode: 'TELEGRAM_ERROR',
+          errorMessage: reason,
+          executedAt: new Date().toISOString(),
+        };
+        const phase5Result = await this.phase5.process({
+          reply: failedReply,
+          context: {
+            senderDisplayName: input.message.senderDisplayName ?? '',
+            delayMs: claim.delayMs,
+            ...(sourceMessageLink === undefined ? {} : { sourceMessageLink }),
+          },
+        });
+        this.record(
+          'action_report',
+          phase5Result.report.delivered ? 'sent' : 'failed',
+          selected.settings.accountId,
+          input.channel.id,
+          claim.sourceMessageId,
+          { destination: 'saved_messages' },
+          phase5Result.report.errorMessage,
+          phase5Result.report.delivered ? 'info' : 'warn',
+        );
+      } else {
+        await this.notifyAccount(
+          selected.settings.accountKey,
+          {
+            type: 'reply_failed',
+            accountNickname: selected.settings.accountNickname,
+            channelTitle: input.channel.title,
+            reason,
+            trigger: claim.matchedTrigger,
+            sourceMessageId: claim.sourceMessageId,
+            ...(sourceMessageLink === undefined ? {} : { sourceMessageLink }),
+          },
+          selected.settings.accountId,
+          input.channel.id,
+          claim.sourceMessageId,
+        );
+      }
       return;
     }
 
@@ -443,7 +477,75 @@ export class AutoReplyService implements ChannelMessageProcessor {
       );
     }
 
-      const reaction = await this.performReaction(
+    const sourceMessageLink = createTelegramMessageLink({
+      ...(channel.username === undefined ? {} : { username: channel.username }),
+      privateChannelId: channel.telegramChannelId,
+      messageId: claim.sourceMessageId,
+    });
+
+    let reaction: { readonly status: ReactionStatus; readonly reason?: string };
+    if (this.phase5 !== undefined) {
+      const successfulReply: ReplyResult = {
+        success: true,
+        accountId: selected.settings.accountId,
+        channelId: input.channel.id,
+        sourceMessageId: claim.sourceMessageId,
+        replyMessageId: reply.messageId,
+        matchedTriggers: [claim.matchedTrigger],
+        executedAt: new Date().toISOString(),
+      };
+      const phase5Result = await this.phase5.process({
+        reply: successfulReply,
+        context: {
+          senderDisplayName: input.message.senderDisplayName ?? '',
+          delayMs: claim.delayMs,
+          sourceMessageLink,
+        },
+      });
+      reaction = phase5Result.reaction.status === 'sent'
+        ? { status: 'sent' }
+        : phase5Result.reaction.status === 'failed'
+          ? {
+              status: 'failed',
+              ...((phase5Result.reaction.errorMessage ?? phase5Result.reaction.errorCode) === undefined
+                ? {}
+                : { reason: phase5Result.reaction.errorMessage ?? phase5Result.reaction.errorCode }),
+            }
+          : { status: 'skipped', reason: phase5Result.reaction.skippedReason ?? phase5Result.reaction.status };
+      this.record(
+        phase5Result.reaction.status === 'sent'
+          ? 'reaction_sent'
+          : phase5Result.reaction.status === 'failed'
+            ? 'reaction_failed'
+            : 'reaction_skipped',
+        phase5Result.reaction.status === 'sent'
+          ? 'sent'
+          : phase5Result.reaction.status === 'failed'
+            ? 'failed'
+            : 'skipped',
+        selected.settings.accountId,
+        input.channel.id,
+        claim.sourceMessageId,
+        {
+          replyMessageId: reply.messageId,
+          reactionType: phase5Result.reaction.reactionType,
+          reactionTargetMessageId: phase5Result.reaction.targetMessageId,
+        },
+        reaction.reason,
+        phase5Result.reaction.status === 'failed' ? 'error' : 'info',
+      );
+      this.record(
+        'action_report',
+        phase5Result.report.delivered ? 'sent' : 'failed',
+        selected.settings.accountId,
+        input.channel.id,
+        claim.sourceMessageId,
+        { destination: 'saved_messages', replyMessageId: reply.messageId },
+        phase5Result.report.errorMessage,
+        phase5Result.report.delivered ? 'info' : 'warn',
+      );
+    } else {
+      reaction = await this.performReaction(
         currentSettings,
         sourceChannelIdentifier,
         claim.sourceMessageId,
@@ -452,6 +554,24 @@ export class AutoReplyService implements ChannelMessageProcessor {
         claim,
         selected.template.id,
       );
+      await this.notifyAccount(
+        selected.settings.accountKey,
+        {
+          type: 'reply_sent',
+          accountNickname: selected.settings.accountNickname,
+          channelTitle: input.channel.title,
+          trigger: claim.matchedTrigger,
+          sourceMessageId: claim.sourceMessageId,
+          sourceMessageLink,
+          reactionStatus: reaction.status,
+          ...(reaction.reason === undefined ? {} : { reactionReason: reaction.reason }),
+        },
+        selected.settings.accountId,
+        input.channel.id,
+        claim.sourceMessageId,
+        reply.messageId,
+      );
+    }
 
     this.dispatches.setReactionStatus(claim.id, reaction.status, reaction.reason);
     this.record(
@@ -468,28 +588,6 @@ export class AutoReplyService implements ChannelMessageProcessor {
         reactionStatus: reaction.status,
         linkAvailable: messageLink !== undefined,
       },
-    );
-    const sourceMessageLink = createTelegramMessageLink({
-      ...(channel.username === undefined ? {} : { username: channel.username }),
-      privateChannelId: channel.telegramChannelId,
-      messageId: claim.sourceMessageId,
-    });
-    await this.notifyAccount(
-      selected.settings.accountKey,
-      {
-        type: 'reply_sent',
-        accountNickname: selected.settings.accountNickname,
-          channelTitle: input.channel.title,
-          trigger: claim.matchedTrigger,
-          sourceMessageId: claim.sourceMessageId,
-          sourceMessageLink,
-          reactionStatus: reaction.status,
-          ...(reaction.reason === undefined ? {} : { reactionReason: reaction.reason }),
-      },
-      selected.settings.accountId,
-      input.channel.id,
-      claim.sourceMessageId,
-      reply.messageId,
     );
   }
 

@@ -120,6 +120,10 @@ export class AccountService {
     return account;
   }
 
+  public getById(accountId: number): AccountRecord | undefined {
+    return this.repository.getById(accountId);
+  }
+
   public setEnabled(accountKey: string, enabled: boolean): AccountRecord {
     this.get(accountKey);
     return this.repository.updateEnabled(accountKey, enabled);

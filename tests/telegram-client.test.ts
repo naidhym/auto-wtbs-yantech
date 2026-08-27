@@ -14,10 +14,12 @@ import { DatabaseService } from '../src/database/database.service.js';
 import { TelegramChannelSyncStateRepository } from '../src/user-client/telegram-channel-sync-state.repository.js';
 import {
   createHeartReactionRequest,
+  createEmojiReactionRequest,
   createTelegramNotificationPayload,
   createTelegramMessageLink,
   createChannelMessageBuilder,
   evaluateHeartReactionCapability,
+  evaluateReactionCapability,
   GramJsClientService,
   mapGramJsEvent,
   reactToChannelMessage,
@@ -291,7 +293,7 @@ describe('GramJS client lifecycle foundation', () => {
     ]);
   });
 
-  it('evaluates available reactions and builds a heart request for the source post', async () => {
+  it('evaluates configured reactions and targets the reply message on its exact peer', async () => {
     expect(evaluateHeartReactionCapability(undefined)).toEqual({
       supported: false,
       reason: 'chat_reactions_none',
@@ -305,7 +307,7 @@ describe('GramJS client lifecycle foundation', () => {
     });
     expect(evaluateHeartReactionCapability(new Api.ChatReactionsSome({
       reactions: [new Api.ReactionEmoji({ emoticon: '👍' })],
-    }))).toEqual({ supported: false, reason: 'heart_reaction_unavailable' });
+    }))).toEqual({ supported: false, reason: 'configured_reaction_unavailable' });
     expect(evaluateHeartReactionCapability(new Api.ChatReactionsSome({
       reactions: [new Api.ReactionEmoji({ emoticon: '❤️' })],
     }))).toEqual({ supported: true });
@@ -319,6 +321,18 @@ describe('GramJS client lifecycle foundation', () => {
     expect(request.msgId).toBe(77);
     expect(request.reaction).toEqual([
       expect.objectContaining({ emoticon: '❤' }),
+    ]);
+
+    const replyPeer = new Api.InputPeerChat({ chatId: bigInt('555') });
+    const configuredRequest = createEmojiReactionRequest(replyPeer, 200, '👍');
+    expect(evaluateReactionCapability(new Api.ChatReactionsSome({
+      reactions: [new Api.ReactionEmoji({ emoticon: '👍' })],
+    }), '👍')).toEqual({ supported: true });
+    expect(configuredRequest.peer).toBe(replyPeer);
+    expect(configuredRequest.msgId).toBe(200);
+    expect(configuredRequest.msgId).not.toBe(100);
+    expect(configuredRequest.reaction).toEqual([
+      expect.objectContaining({ emoticon: '👍' }),
     ]);
 
     const channel = new Api.Channel({
