@@ -3,12 +3,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Api, type TelegramClient } from 'telegram';
 import bigInt from 'big-integer';
 
 import { createLogger } from '../src/logging/logger.js';
 import { configureSqliteConnection } from '../src/database/database.service.js';
+
+const openDatabases: DatabaseSync[] = [];
 import { foundationMigration } from '../src/database/migrations/0001-foundation.js';
 import { accountSessionMigration } from '../src/database/migrations/0002-account-session.js';
 import { independentChannelsMigration } from '../src/database/migrations/0003-independent-channels.js';
@@ -50,6 +52,7 @@ function createSyncRepository(root: string, channels: ReadonlyArray<readonly [st
   fs.mkdirSync(root, { recursive: true });
   const databasePath = path.join(root, 'sync.sqlite');
   const database = new DatabaseSync(databasePath);
+  openDatabases.push(database);
   configureSqliteConnection(database);
   foundationMigration.up(database);
   accountSessionMigration.up(database);
@@ -102,6 +105,17 @@ function createClient(
 }
 
 describe('telegram update engine', () => {
+  afterEach(() => {
+    for (const database of openDatabases) {
+      try {
+        database.close();
+      } catch {
+        // ignore double-close or already-closed handles
+      }
+    }
+    openDatabases.length = 0;
+  });
+
   it('subscribes 7 channels x 2 accounts independently and delivers live posts', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-engine-'));
     const logger = createLogger({ level: 'error', logDirectory: path.join(root, 'logs'), environment: 'test', writeToStdout: false });

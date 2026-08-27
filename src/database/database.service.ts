@@ -18,6 +18,7 @@ export const FOUNDATION_TABLES = [
   'account_channels',
   'accounts',
   'automation_dispatches',
+  'channel_identity_history',
   'channels',
   'logs',
   'owners',

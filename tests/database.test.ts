@@ -42,7 +42,7 @@ describe('database foundation', () => {
 
     const first = new DatabaseService(databasePath, loggerHandle.logger);
     first.initialize();
-    expect(first.getMigrationVersion()).toBe(12);
+    expect(first.getMigrationVersion()).toBe(13);
     expect(first.getTableNames()).toEqual(
       [...FOUNDATION_TABLES, 'schema_migrations'].sort(),
     );
@@ -93,7 +93,7 @@ describe('database foundation', () => {
 
     const second = new DatabaseService(databasePath, loggerHandle.logger);
     second.initialize();
-    expect(second.getMigrationVersion()).toBe(12);
+    expect(second.getMigrationVersion()).toBe(13);
     expect(second.getTableNames()).toEqual(
       [...FOUNDATION_TABLES, 'schema_migrations'].sort(),
     );
@@ -293,23 +293,28 @@ describe('database foundation', () => {
     const service = new DatabaseService(databasePath, logger.logger);
     service.initialize();
     const connection = service.getConnection();
-    expect(service.getMigrationVersion()).toBe(12);
+    expect(service.getMigrationVersion()).toBe(13);
+    // v13 intentionally resets only the active channel subsystem.
     expect(connection.prepare('SELECT COUNT(*) AS count FROM channels').get())
-      .toEqual({ count: 1 });
+      .toEqual({ count: 0 });
     expect(connection.prepare('SELECT COUNT(*) AS count FROM account_channels').get())
-      .toEqual({ count: 2 });
+      .toEqual({ count: 0 });
+    // Durable channel identity is preserved in history rather than the active table.
+    expect(connection.prepare('SELECT COUNT(*) AS count FROM channel_identity_history').get())
+      .toEqual({ count: 1 });
+    // Legacy channel-scoped references are detached, not deleted, by v13.
     expect(connection.prepare('SELECT channel_id FROM rules WHERE id = 1').get())
-      .toEqual({ channel_id: 10 });
+      .toEqual({ channel_id: null });
     expect(connection.prepare('SELECT channel_id FROM logs WHERE event_type = ?').get('legacy'))
-      .toEqual({ channel_id: 10 });
+      .toEqual({ channel_id: null });
     expect(connection.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     service.close();
 
     const reopened = new DatabaseService(databasePath, logger.logger);
     reopened.initialize();
-    expect(reopened.getMigrationVersion()).toBe(12);
+    expect(reopened.getMigrationVersion()).toBe(13);
     expect(reopened.getConnection().prepare('SELECT COUNT(*) AS count FROM account_channels').get())
-      .toEqual({ count: 2 });
+      .toEqual({ count: 0 });
     reopened.close();
     logger.close();
   });
@@ -356,7 +361,7 @@ describe('database foundation', () => {
     const service = new DatabaseService(databasePath, logger.logger);
     service.initialize();
     const connection = service.getConnection();
-    expect(service.getMigrationVersion()).toBe(12);
+    expect(service.getMigrationVersion()).toBe(13);
     expect(connection.prepare(`
       SELECT id, account_id, name, body, is_enabled FROM reply_templates WHERE id = 7
     `).get()).toEqual({
@@ -383,7 +388,8 @@ describe('database foundation', () => {
     `).get()).toEqual({
       id: 8,
       owner_id: 1,
-      channel_id: 5,
+      // v13 intentionally detaches legacy channel-scoped references.
+      channel_id: null,
       reply_template_id: 7,
       cleanup_sender_patterns: '["JGN REPLY"]',
       is_enabled: 1,
@@ -397,7 +403,7 @@ describe('database foundation', () => {
 
     const reopened = new DatabaseService(databasePath, logger.logger);
     reopened.initialize();
-    expect(reopened.getMigrationVersion()).toBe(12);
+    expect(reopened.getMigrationVersion()).toBe(13);
     expect(reopened.getConnection().prepare('SELECT COUNT(*) AS count FROM rules').get())
       .toEqual({ count: 1 });
     reopened.close();

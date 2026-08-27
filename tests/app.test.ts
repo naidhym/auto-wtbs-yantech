@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { Telegraf } from 'telegraf';
 import { describe, expect, it, vi } from 'vitest';
@@ -27,7 +28,7 @@ describe('application lifecycle', () => {
     expect(application.getStatus()).toMatchObject({
       milestone: 'M6',
       state: 'running',
-      migrationVersion: 12,
+      migrationVersion: 13,
       adminBotEnabled: false,
       adminBotRunning: false,
       registeredTelegramClients: 0,
@@ -36,6 +37,12 @@ describe('application lifecycle', () => {
     expect(fs.existsSync(config.storage.databasePath)).toBe(true);
     expect(fs.statSync(config.storage.sessionDirectory).isDirectory()).toBe(true);
     expect(fs.statSync(config.storage.logDirectory).isDirectory()).toBe(true);
+
+    const database = new DatabaseSync(config.storage.databasePath);
+    expect(database.prepare('SELECT COUNT(*) AS count FROM channels').get()).toEqual({ count: 0 });
+    expect(database.prepare('SELECT COUNT(*) AS count FROM account_channels').get()).toEqual({ count: 0 });
+    expect(database.prepare('SELECT COUNT(*) AS count FROM telegram_channel_sync_state').get()).toEqual({ count: 0 });
+    database.close();
 
     await application.shutdown('test complete');
 

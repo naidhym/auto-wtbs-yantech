@@ -10,6 +10,7 @@ import { telegramChannelSyncStateMigration } from './0009-telegram-channel-sync-
 import { resetChannelsForRedesignMigration } from './0010-reset-channels-for-redesign.js';
 import { replyExecutionConfigurationMigration } from './0011-reply-execution-configuration.js';
 import { reactionConfigurationMigration } from './0012-reaction-configuration.js';
+import { rebuildChannelSchemaMigration } from './0013-rebuild-channel-schema.js';
 import type { Migration } from './types.js';
 
 export const migrations: readonly Migration[] = [
@@ -25,4 +26,5 @@ export const migrations: readonly Migration[] = [
   resetChannelsForRedesignMigration,
   replyExecutionConfigurationMigration,
   reactionConfigurationMigration,
+  rebuildChannelSchemaMigration,
 ];
