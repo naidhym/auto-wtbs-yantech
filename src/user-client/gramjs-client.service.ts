@@ -16,6 +16,7 @@ import {
 } from '../shared/telegram-reaction.js';
 import { TelegramUpdateEngine, type TelegramEngineStatus } from './telegram-update.engine.js';
 import { TelegramChannelSyncStateRepository } from './telegram-channel-sync-state.repository.js';
+import { channelIdsMatch } from './telegram-channel-id.js';
 
 export type TelegramClientState =
   | 'disconnected'
@@ -699,7 +700,7 @@ export async function mapGramJsEvent(
 ): Promise<TelegramIncomingMessage> {
   const message = event.message;
   const sameChannel = message.peerId instanceof Api.PeerChannel &&
-    message.peerId.channelId.equals(subscribedEntity.id);
+    channelIdsMatch(message.peerId.channelId, subscribedEntity.id);
   let chatKind: TelegramIncomingMessage['chatKind'] = 'unknown';
 
   if (subscribedEntity.megagroup === true) {

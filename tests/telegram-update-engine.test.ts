@@ -1000,4 +1000,52 @@ describe('telegram update engine', () => {
     expect(live).toEqual([201]);
     logger.close();
   });
+
+  it('delivers live posts for a channel whose native update peerId differs in sign from the resolved entity (1611324665) without misclassifying another channel', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-engine-sign-mismatch-'));
+    const logger = createLogger({ level: 'error', logDirectory: path.join(root, 'logs'), environment: 'test', writeToStdout: false });
+    const channels = [
+      ['1611324665', 'failing-channel'],
+      ['3980589729', 'working-channel'],
+    ] as const;
+    const repository = createSyncRepository(root, channels);
+    const handlers: Array<(update: unknown) => void> = [];
+    const entities = new Map(channels.map(([id, title]) => [id, createChannel(id, title)]));
+    const invoke = vi.fn().mockImplementation((request: unknown) => {
+      if (request instanceof Api.updates.GetChannelDifference) {
+        return Promise.resolve(new Api.updates.ChannelDifferenceEmpty({ pts: request.pts + 1 }));
+      }
+      throw new Error('unexpected');
+    });
+    const engine = new TelegramUpdateEngine('account-1', createClient(entities, invoke, handlers), repository, logger.logger);
+    const received: Array<{ channel: string; id: number }> = [];
+
+    for (const [index, [id, title]] of channels.entries()) {
+      await engine.subscribe({
+        assignmentId: index + 1,
+        accountId: 1,
+        accountKey: 'account-1',
+        channel: { id: index + 1, telegramChannelId: id, title, enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
+        identifier: id,
+        onLivePost: (event) => {
+          received.push({ channel: event.telegramChannelId ?? '', id: event.sourceMessageId ?? 0 });
+          return Promise.resolve();
+        },
+        onError: () => Promise.resolve(),
+      });
+    }
+
+    // 1611324665 arrives with a NEGATIVE peerId in the native update (the real
+    // failure mode). 3980589729 arrives with a POSITIVE peerId.
+    handlers[0]?.(new Api.UpdateNewChannelMessage({ message: createMessage('-1611324665', 1, 'post-a'), pts: 10, ptsCount: 1 }));
+    await flushEngine();
+    handlers[0]?.(new Api.UpdateNewChannelMessage({ message: createMessage('3980589729', 2, 'post-b'), pts: 11, ptsCount: 1 }));
+    await flushEngine();
+
+    expect(received).toContainEqual({ channel: '1611324665', id: 1 });
+    expect(received).toContainEqual({ channel: '3980589729', id: 2 });
+    expect(received).toHaveLength(2);
+    expect(engine.getStatus().syncedChannels).toBe(2);
+    logger.close();
+  });
 });

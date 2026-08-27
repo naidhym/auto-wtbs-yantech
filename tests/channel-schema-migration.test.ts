@@ -318,9 +318,21 @@ describe('migration v13 channel schema rebuild', () => {
     expect(
       database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get(),
     ).toEqual({ version: 14 });
-    expect(countRows(database, 'channels')).toBe(0);
-    expect(countRows(database, 'account_channels')).toBe(0);
-    expect(countRows(database, 'telegram_channel_sync_state')).toBe(0);
+    expect(countRows(database, 'channels')).toBe(1);
+    expect(countRows(database, 'account_channels')).toBe(1);
+    expect(countRows(database, 'telegram_channel_sync_state')).toBe(1);
+
+    expect(database.prepare('SELECT telegram_channel_id, status FROM channels WHERE id = 7').get()).toEqual({
+      telegram_channel_id: '-1007000000007',
+      status: 'healthy',
+    });
+    expect(
+      database.prepare('SELECT account_id, channel_id, status FROM account_channels WHERE id = 8').get(),
+    ).toEqual({
+      account_id: 1,
+      channel_id: 7,
+      status: 'healthy',
+    });
 
     expect(database.prepare('SELECT telegram_user_id FROM owners WHERE id = 1').get()).toEqual({
       telegram_user_id: '111111111',
@@ -384,9 +396,9 @@ describe('migration v13 channel schema rebuild', () => {
       `).run(`-10080000000${index}`, `Status ${status}`, status);
     }
 
-    expect(
-      database.prepare('SELECT status FROM channels ORDER BY id').all().map((row) => row.status),
-    ).toEqual(CHANNEL_STATUSES);
+      expect(
+        database.prepare('SELECT status FROM channels ORDER BY id').all().map((row) => row.status),
+      ).toEqual(['healthy', ...CHANNEL_STATUSES]);
     expect(() =>
       database.prepare(`
         INSERT INTO channels (telegram_channel_id, title, status)
@@ -404,9 +416,9 @@ describe('migration v13 channel schema rebuild', () => {
     const migrated = openMigratedDatabase(databasePath);
     const database = migrated.database;
 
-    expect(countRows(database, 'channels')).toBe(0);
-    expect(countRows(database, 'account_channels')).toBe(0);
-    expect(countRows(database, 'telegram_channel_sync_state')).toBe(0);
+    expect(countRows(database, 'channels')).toBe(1);
+    expect(countRows(database, 'account_channels')).toBe(1);
+    expect(countRows(database, 'telegram_channel_sync_state')).toBe(1);
     expect(countRows(database, 'automation_dispatches')).toBe(1);
 
     const newChannel = database.prepare(`

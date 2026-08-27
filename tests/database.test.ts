@@ -294,12 +294,13 @@ describe('database foundation', () => {
     service.initialize();
     const connection = service.getConnection();
     expect(service.getMigrationVersion()).toBe(14);
-    // v13 intentionally resets only the active channel subsystem.
+    // v13 preserves the active channel subsystem (global channel rows, account-channel
+    // assignments, and sync state) instead of wiping it on every startup.
     expect(connection.prepare('SELECT COUNT(*) AS count FROM channels').get())
-      .toEqual({ count: 0 });
+      .toEqual({ count: 1 });
     expect(connection.prepare('SELECT COUNT(*) AS count FROM account_channels').get())
-      .toEqual({ count: 0 });
-    // Durable channel identity is preserved in history rather than the active table.
+      .toEqual({ count: 2 });
+    // Durable channel identity is preserved alongside the active table.
     expect(connection.prepare('SELECT COUNT(*) AS count FROM channel_identity_history').get())
       .toEqual({ count: 1 });
     // Legacy channel-scoped references are detached, not deleted, by v13.
@@ -314,7 +315,7 @@ describe('database foundation', () => {
     reopened.initialize();
     expect(reopened.getMigrationVersion()).toBe(14);
     expect(reopened.getConnection().prepare('SELECT COUNT(*) AS count FROM account_channels').get())
-      .toEqual({ count: 0 });
+      .toEqual({ count: 2 });
     reopened.close();
     logger.close();
   });

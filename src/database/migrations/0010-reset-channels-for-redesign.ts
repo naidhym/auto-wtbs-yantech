@@ -15,10 +15,23 @@ export const resetChannelsForRedesignMigration: Migration = {
     const templateCount = (
       database.prepare('SELECT COUNT(*) AS count FROM reply_templates').get() as { count: number }
     ).count;
+    const channelCount = (
+      database.prepare('SELECT COUNT(*) AS count FROM channels').get() as { count: number }
+    ).count;
+    const assignmentCount = (
+      database.prepare('SELECT COUNT(*) AS count FROM account_channels').get() as { count: number }
+    ).count;
 
-    // If there are any rules or templates, this is not a fresh database.
-    // Skip the reset to preserve existing data.
-    if (ruleCount > 0 || templateCount > 0) {
+    // Never wipe a database that already contains any production data:
+    // rules, reply templates, channels, or channel assignments. Only a truly
+    // empty install (no channels and no automation config) is reset, and even
+    // then the DELETEs below operate on empty tables and are no-ops.
+    if (
+      ruleCount > 0 ||
+      templateCount > 0 ||
+      channelCount > 0 ||
+      assignmentCount > 0
+    ) {
       return;
     }
 
