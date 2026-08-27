@@ -4,7 +4,7 @@ import { errorReason, type AppLogger } from '../logging/logger.js';
 import { ChannelListenerService } from './channel-listener.service.js';
 import type { ListenerStartSummary } from './channel-listener.service.js';
 import { ChannelRepository } from './channel.repository.js';
-import type { ChannelAssignmentRecord, ChannelRecord } from './channel.types.js';
+import type { ChannelAssignmentRecord, ChannelRecord, ResolvedTelegramChannel } from './channel.types.js';
 import type { ChannelAccessGateway } from './channel.types.js';
 
 export interface ChannelDetail {
@@ -63,6 +63,42 @@ export class ChannelService {
       this.logger.warn({ account: accountKey, action: 'channel_resolve', status: 'failed', errorReason: errorReason(error) }, 'Channel validation or assignment failed');
       throw error;
     }
+  }
+
+  public async resolveChannelPreview(
+    identifier: string,
+    accountKey: string,
+  ): Promise<{ resolved: ResolvedTelegramChannel; existing: ChannelRecord | undefined }> {
+    const resolved = await this.gateway.resolve(accountKey, identifier);
+    const existing = this.repository.getByTelegramId(resolved.telegramChannelId);
+    return { resolved, existing };
+  }
+
+  public async addBulkChannels(
+    identifiers: string[],
+    accountKeys: string[],
+  ): Promise<{
+    created: number[];
+    assigned: Array<{ identifier: string; accountKey: string; channelId: number }>;
+    failed: Array<{ identifier: string; accountKey: string; reason: string }>;
+  }> {
+    const created: number[] = [];
+    const assigned: Array<{ identifier: string; accountKey: string; channelId: number }> = [];
+    const failed: Array<{ identifier: string; accountKey: string; reason: string }> = [];
+
+    for (const accountKey of accountKeys) {
+      for (const identifier of identifiers) {
+        try {
+          const detail = await this.addChannel(identifier, accountKey);
+          assigned.push({ identifier, accountKey, channelId: detail.channel.id });
+          if (!created.includes(detail.channel.id)) created.push(detail.channel.id);
+        } catch (error) {
+          failed.push({ identifier, accountKey, reason: error instanceof Error ? error.message : 'Unknown error' });
+        }
+      }
+    }
+
+    return { created, assigned, failed };
   }
 
   public async assignAccount(channelId: number, accountKey: string): Promise<ChannelDetail> {

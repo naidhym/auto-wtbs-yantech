@@ -19,7 +19,11 @@ import {
   type AdminRuleController,
   type AdminBotLifecycleAdapter,
 } from '../src/admin-bot/admin-bot.service.js';
-import type { ChannelAssignmentRecord, ChannelRecord } from '../src/channels/channel.types.js';
+import type {
+  ChannelAssignmentRecord,
+  ChannelRecord,
+  ResolvedTelegramChannel,
+} from '../src/channels/channel.types.js';
 import type { ReplyTemplateRecord, RuleInput, RuleRecord } from '../src/rules/rule.types.js';
 import { createLogger, type LoggerHandle } from '../src/logging/logger.js';
 
@@ -198,6 +202,32 @@ class FakeChannelController implements AdminChannelController {
   }
   public stopAccountListeners(): Promise<void> { return Promise.resolve(); }
   public restartAccountListeners(): Promise<void> { return Promise.resolve(); }
+  public resolveChannelPreview(
+    identifier: string,
+    accountKey: string,
+  ): Promise<{ resolved: ResolvedTelegramChannel; existing: ChannelRecord | undefined }> {
+    void accountKey;
+    const numericId = identifier.replace(/[^0-9]/g, '') || '0';
+    const resolved: ResolvedTelegramChannel = {
+      telegramChannelId: numericId,
+      title: `Channel ${identifier}`,
+      ...(identifier.startsWith('@') ? { username: identifier.slice(1).toLowerCase() } : {}),
+    };
+    return Promise.resolve({ resolved, existing: undefined });
+  }
+  public async addBulkChannels(identifiers: string[], accountKeys: string[]) {
+    const created: number[] = [];
+    const assigned: Array<{ identifier: string; accountKey: string; channelId: number }> = [];
+    for (const accountKey of accountKeys) {
+      for (const identifier of identifiers) {
+        await this.addChannel(identifier, accountKey);
+        const channelId = this.channels[0]?.id ?? 1;
+        assigned.push({ identifier, accountKey, channelId });
+        if (!created.includes(channelId)) created.push(channelId);
+      }
+    }
+    return { created, assigned, failed: [] };
+  }
 }
 
 class FakeTemplateController implements AdminReplyTemplateController {

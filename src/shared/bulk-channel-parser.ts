@@ -22,6 +22,17 @@ export interface ChannelInputParseResult {
   invalid: Array<{ original: string; reason: string }>;
 }
 
+export function splitChannelInputLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+export function parseChannelInputText(text: string): ChannelInputParseResult {
+  return parseChannelInputBatch(splitChannelInputLines(text));
+}
+
 export function parseChannelInputBatch(lines: string[]): ChannelInputParseResult {
   const valid: ParsedChannelInput[] = [];
   const invalid: Array<{ original: string; reason: string }> = [];

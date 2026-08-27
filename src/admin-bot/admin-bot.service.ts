@@ -6,7 +6,15 @@ import type {
   AccountAutomationSettings,
   OwnerNotification,
 } from '../automation/automation.types.js';
-import type { ChannelAssignmentRecord, ChannelRecord } from '../channels/channel.types.js';
+import type {
+  ChannelAssignmentRecord,
+  ChannelRecord,
+  ResolvedTelegramChannel,
+} from '../channels/channel.types.js';
+import {
+  parseChannelInputText,
+  splitChannelInputLines,
+} from '../shared/bulk-channel-parser.js';
 import { errorReason, type AppLogger } from '../logging/logger.js';
 import type { ActionReportRecord } from '../logging/event-log.repository.js';
 import type {
@@ -64,6 +72,12 @@ export interface AdminChannelController {
   getChannel(channelId: number): { channel: ChannelRecord; assignments: ChannelAssignmentRecord[] };
   listAccountChannels(accountKey: string): Array<{ channel: ChannelRecord; assignment: ChannelAssignmentRecord }>;
   addChannel(identifier: string, accountKey: string): Promise<{ channel: ChannelRecord }>;
+  addBulkChannels(identifiers: string[], accountKeys: string[]): Promise<{
+    created: number[];
+    assigned: Array<{ identifier: string; accountKey: string; channelId: number }>;
+    failed: Array<{ identifier: string; accountKey: string; reason: string }>;
+  }>;
+  resolveChannelPreview(identifier: string, accountKey: string): Promise<{ resolved: ResolvedTelegramChannel; existing: ChannelRecord | undefined }>;
   assignAccount(channelId: number, accountKey: string): Promise<unknown>;
   unassign(assignmentId: number): Promise<void>;
   setChannelEnabled(channelId: number, enabled: boolean): Promise<unknown>;
@@ -138,8 +152,8 @@ type AdminConversationState =
   | { readonly step: 'awaiting_otp'; readonly accountKey: string }
   | { readonly step: 'awaiting_password'; readonly accountKey: string }
   | { readonly step: 'awaiting_channel_identifiers' }
-  | { readonly step: 'confirming_bulk_channels'; readonly resolvedChannels: BulkChannelResolutionState }
-  | { readonly step: 'selecting_bulk_accounts'; readonly channelIds: number[] }
+  | { readonly step: 'confirming_bulk_channels'; readonly identifiers: string[]; readonly resolvedChannels: BulkChannelResolutionState }
+  | { readonly step: 'selecting_bulk_accounts'; readonly identifiers: string[]; readonly selectedAccountIds: number[] }
   | { readonly step: 'awaiting_channel_identifier' }
   | { readonly step: 'awaiting_channel_account'; readonly identifier: string }
   | { readonly step: 'awaiting_rule_name'; readonly ruleId?: number }
@@ -695,6 +709,86 @@ export class AdminBotService {
     this.bot.action(/^a:ch:(account-[a-f0-9-]{36})$/, async (context) => {
       await acknowledgeCallback(context);
       await this.showAccountChannels(context, requireCallbackAccountKey(context), true);
+    });
+
+    this.bot.action('bc:confirm', async (context) => {
+      await acknowledgeCallback(context);
+      await this.withAdminError(context, async () => {
+        const actorId = requireActorId(context);
+        const state = this.conversations.get(actorId);
+        if (state?.step !== 'confirming_bulk_channels') {
+          throw new Error('Bulk import flow has expired');
+        }
+        if (state.identifiers.length === 0) {
+          throw new Error('No valid channel identifiers to import');
+        }
+        this.conversations.set(actorId, {
+          step: 'selecting_bulk_accounts',
+          identifiers: state.identifiers,
+          selectedAccountIds: [],
+        });
+        await this.presentBulkAccountSelection(context, state.identifiers, []);
+      });
+    });
+
+    this.bot.action(/^bc:ac:(\d+)$/, async (context) => {
+      await acknowledgeCallback(context);
+      await this.withAdminError(context, async () => {
+        const actorId = requireActorId(context);
+        const state = this.conversations.get(actorId);
+        if (state?.step !== 'selecting_bulk_accounts') {
+          throw new Error('Bulk import flow has expired');
+        }
+        const accountId = callbackNumber(context);
+        const selected = state.selectedAccountIds.includes(accountId)
+          ? state.selectedAccountIds.filter((id) => id !== accountId)
+          : [...state.selectedAccountIds, accountId];
+        this.conversations.set(actorId, {
+          step: 'selecting_bulk_accounts',
+          identifiers: state.identifiers,
+          selectedAccountIds: selected,
+        });
+        await this.presentBulkAccountSelection(context, state.identifiers, selected);
+      });
+    });
+
+    this.bot.action('bc:go', async (context) => {
+      await acknowledgeCallback(context);
+      await this.withAdminError(context, async () => {
+        const actorId = requireActorId(context);
+        const state = this.conversations.get(actorId);
+        if (state?.step !== 'selecting_bulk_accounts') {
+          throw new Error('Bulk import flow has expired');
+        }
+        if (state.selectedAccountIds.length === 0) {
+          throw new Error('Select at least one monitoring account first');
+        }
+        const accounts = this.requireChannelController()
+          .listAccounts()
+          .filter((account) => state.selectedAccountIds.includes(account.id));
+        if (accounts.length === 0) {
+          throw new Error('Selected accounts are no longer available');
+        }
+        const result = await this.requireChannelController().addBulkChannels(
+          state.identifiers,
+          accounts.map((account) => account.accountKey),
+        );
+        this.conversations.delete(actorId);
+        const lines: string[] = ['✅ Bulk import complete'];
+        if (result.created.length > 0) {
+          lines.push(`Created ${result.created.length} channel(s).`);
+        }
+        if (result.assigned.length > 0) {
+          lines.push(`Assigned ${result.assigned.length} channel/account pair(s).`);
+        }
+        if (result.failed.length > 0) {
+          lines.push(`Failed ${result.failed.length}:`);
+          for (const failure of result.failed.slice(0, 10)) {
+            lines.push(`  • ${failure.identifier} (${failure.accountKey}) — ${failure.reason}`);
+          }
+        }
+        await this.present(context, lines.join('\n'), backToMainKeyboard(), true);
+      });
     });
   }
 
@@ -1462,15 +1556,172 @@ export class AdminBotService {
     input: string,
   ): Promise<void> {
     await this.withAdminError(context, async () => {
-      const text = input.trim();
-      if (text.length === 0) {
+      const lines = splitChannelInputLines(input);
+      if (lines.length === 0) {
         throw new Error('Please send at least one channel identifier');
       }
 
-      // For now, treat as single identifier and delegate to original handler
-      // This maintains backward compatibility while the bulk UI is being completed
-      await this.handleChannelIdentifierInput(context, text);
+      // A single channel identifier keeps the original direct validation flow
+      // (ask for the monitoring account immediately). Only multi-line input is
+      // treated as a bulk import.
+      if (lines.length === 1) {
+        const single = lines[0];
+        if (single !== undefined) {
+          await this.handleChannelIdentifierInput(context, single);
+          return;
+        }
+      }
+
+      const parsed = parseChannelInputText(input);
+      if (parsed.valid.length === 0 && parsed.invalid.length === 0) {
+        throw new Error('Please send at least one channel identifier');
+      }
+
+      const accounts = this.requireChannelController()
+        .listAccounts()
+        .filter((account) => account.enabled && account.status === 'connected');
+
+      const resolutionAccount = accounts[0];
+      if (resolutionAccount === undefined) {
+        await context.reply(
+          'No enabled, connected account is available for channel validation.',
+          cancelKeyboard(),
+        );
+        return;
+      }
+
+      const resolutionAccountKey = resolutionAccount.accountKey;
+      const valid: Array<{ id: number; title: string; username?: string }> = [];
+      const invalid: Array<{ identifier: string; reason: string }> = [];
+      const duplicates: Array<{ identifier: string; title: string }> = [];
+
+      for (const item of parsed.valid) {
+        try {
+          const preview = await this.requireChannelController().resolveChannelPreview(
+            item.normalized,
+            resolutionAccountKey,
+          );
+          if (preview.existing !== undefined) {
+            duplicates.push({ identifier: item.normalized, title: preview.existing.title });
+          } else {
+            const idNum = Number(preview.resolved.telegramChannelId);
+            const entry: { id: number; title: string; username?: string } = {
+              id: Number.isFinite(idNum) ? idNum : 0,
+              title: preview.resolved.title,
+            };
+            if (preview.resolved.username !== undefined) {
+              entry.username = preview.resolved.username;
+            }
+            valid.push(entry);
+          }
+        } catch (error) {
+          invalid.push({
+            identifier: item.normalized,
+            reason: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      }
+
+      for (const item of parsed.invalid) {
+        if (/[Dd]uplicate in batch/.test(item.reason)) {
+          duplicates.push({ identifier: item.original, title: '' });
+        } else {
+          invalid.push({ identifier: item.original, reason: item.reason });
+        }
+      }
+
+      const resolvedChannels: BulkChannelResolutionState = { valid, invalid, duplicates };
+      const identifiers = parsed.valid.map((item) => item.normalized);
+
+      this.conversations.set(requireActorId(context), {
+        step: 'confirming_bulk_channels',
+        identifiers,
+        resolvedChannels,
+      });
+
+      await this.presentBulkPreview(context, resolvedChannels);
     });
+  }
+
+  private buildBulkPreviewMessage(state: BulkChannelResolutionState): string {
+    const lines: string[] = [
+      '📋 Bulk Channel Import Preview',
+      `Received ${state.valid.length + state.invalid.length + state.duplicates.length} identifier(s) from your message.`,
+      '',
+    ];
+
+    if (state.valid.length > 0) {
+      lines.push(`✅ Valid (${state.valid.length})`);
+      for (const item of state.valid) {
+        const ref = item.username !== undefined ? `@${item.username}` : `ID: ${item.id}`;
+        lines.push(`  • ${item.title} (${ref})`);
+      }
+      lines.push('');
+    }
+
+    if (state.invalid.length > 0) {
+      lines.push(`❌ Invalid (${state.invalid.length})`);
+      for (const item of state.invalid) {
+        lines.push(`  • ${item.identifier} — ${item.reason}`);
+      }
+      lines.push('');
+    }
+
+    if (state.duplicates.length > 0) {
+      lines.push(`⚠️ Duplicate (${state.duplicates.length})`);
+      for (const item of state.duplicates) {
+        lines.push(`  • ${item.identifier}${item.title ? ` — ${item.title}` : ''}`);
+      }
+      lines.push('');
+    }
+
+    lines.push('Confirm to import the valid/duplicate channels, or cancel.');
+    return lines.join('\n');
+  }
+
+  private presentBulkPreview(context: Context, state: BulkChannelResolutionState): Promise<void> {
+    return this.present(
+      context,
+      this.buildBulkPreviewMessage(state),
+      Markup.inlineKeyboard([
+        [Markup.button.callback('✅ Confirm Import', 'bc:confirm')],
+        [Markup.button.callback('❌ Cancel', 'flow:cancel')],
+      ]),
+      false,
+    );
+  }
+
+  private presentBulkAccountSelection(
+    context: Context,
+    identifiers: string[],
+    selectedAccountIds: number[],
+  ): Promise<void> {
+    const accounts = this.requireChannelController()
+      .listAccounts()
+      .filter((account) => account.enabled && account.status === 'connected');
+    const keyboard = Markup.inlineKeyboard([
+      ...accounts.map((account) => [
+        Markup.button.callback(
+          `${selectedAccountIds.includes(account.id) ? '✅' : '⬜'} ${truncateLabel(account.nickname)}`,
+          `bc:ac:${account.id}`,
+        ),
+      ]),
+      [
+        Markup.button.callback('📥 Confirm Assignment', 'bc:go'),
+        Markup.button.callback('❌ Cancel', 'flow:cancel'),
+      ],
+    ]);
+    void identifiers;
+    return this.present(
+      context,
+      [
+        '📡 Select Monitoring Accounts',
+        `Ready to import ${identifiers.length} channel(s).`,
+        'Choose one or more accounts, then confirm assignment.',
+      ].join('\n'),
+      keyboard,
+      true,
+    );
   }
 
   private registerLegacyCommands(): void {
