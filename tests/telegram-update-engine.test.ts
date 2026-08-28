@@ -182,6 +182,67 @@ describe('telegram update engine', () => {
     logger.close();
   });
 
+  it('delivers live posts from a supergroup (megagroup) channel, not only broadcasts', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-engine-supergroup-'));
+    const logger = createLogger({ level: 'error', logDirectory: path.join(root, 'logs'), environment: 'test', writeToStdout: false });
+    const repository = createSyncRepository(root, [['7000000001', 'sg']]);
+    const entity = new Api.Channel({
+      id: bigInt('7000000001'),
+      accessHash: bigInt('97000000001'),
+      title: 'sg',
+      photo: new Api.ChatPhotoEmpty(),
+      date: 0,
+      megagroup: true,
+    });
+    const invoke = vi.fn().mockImplementation((request: unknown) => {
+      if (request instanceof Api.updates.GetChannelDifference) {
+        return Promise.resolve(new Api.updates.ChannelDifferenceEmpty({ pts: request.pts + 1 }));
+      }
+      throw new Error(`Unexpected invoke request ${String(request)}`);
+    });
+    const handlers: Array<(update: unknown) => void> = [];
+    const client = {
+      connected: true,
+      getEntity: () => Promise.resolve(entity),
+      addEventHandler(callback: (update: unknown) => void) {
+        handlers.push(callback);
+      },
+      invoke,
+    } as unknown as TelegramClient;
+    const engine = new TelegramUpdateEngine('account-1', client, repository, logger.logger);
+    const received: Array<{ id: string; msg: number; kind: string }> = [];
+    await engine.subscribe({
+      assignmentId: 101,
+      accountId: 1,
+      accountKey: 'account-1',
+      channel: { id: 1, telegramChannelId: '7000000001', title: 'sg', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
+      identifier: '7000000001',
+      onLivePost: (event) => {
+        received.push({ id: event.telegramChannelId ?? '', msg: event.sourceMessageId ?? 0, kind: event.chatKind });
+        return Promise.resolve();
+      },
+      onError: () => Promise.resolve(),
+    });
+
+    const message = new Api.Message({
+      out: false,
+      mentioned: false,
+      mediaUnread: false,
+      silent: false,
+      post: false,
+      id: 5,
+      peerId: new Api.PeerChannel({ channelId: bigInt('7000000001') }),
+      message: 'wtb',
+      date: 0,
+    });
+    handlers[0]?.(new Api.UpdateNewChannelMessage({ message, pts: 10, ptsCount: 1 }));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({ id: '7000000001', msg: 5, kind: 'supergroup' });
+    logger.close();
+  });
+
   it('restores persisted sync state after restart and resumes live delivery', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-engine-restart-'));
     const logger = createLogger({ level: 'error', logDirectory: path.join(root, 'logs'), environment: 'test', writeToStdout: false });

@@ -76,7 +76,23 @@ function requireRealV8(): string {
     throw new Error(`Real database is at v${version}, expected v8; skipping to avoid wrong fixture`);
   }
   probe.close();
+  // The real working DB currently has 3 accounts, but the intended production
+  // setup is exactly 2. Trim the COPY (never the real DB) to the 2 intended
+  // monitoring accounts so the fixture is deterministic and does not inherit the
+  // accidental third account.
+  trimToTwoAccounts(dbPath);
   return dbPath;
+}
+
+// Reduce a COPIED fixture database to exactly the 2 intended monitoring
+// accounts (ids 1 and 2). Only ever called on test copies, never on the real
+// production database. Child rows are cleaned up automatically by the existing
+// ON DELETE CASCADE / SET NULL foreign keys, keeping the fixture consistent.
+function trimToTwoAccounts(dbPath: string): void {
+  const db = new DatabaseSync(dbPath);
+  db.exec('PRAGMA foreign_keys = ON;');
+  db.exec('DELETE FROM accounts WHERE id > 2');
+  db.close();
 }
 
 // Augment a copied v8 database into a production-shaped dataset:
@@ -145,6 +161,15 @@ describe('migration safety: production channel subsystem is preserved', () => {
     const preDispatchCount = (pre.prepare('SELECT COUNT(*) AS c FROM automation_dispatches').get() as { c: number }).c;
     const preRuleCount = (pre.prepare('SELECT COUNT(*) AS c FROM rules').get() as { c: number }).c;
     const preTemplateCount = (pre.prepare('SELECT COUNT(*) AS c FROM reply_templates').get() as { c: number }).c;
+    const preAccounts = (
+      pre.prepare('SELECT id, label, telegram_user_id, status, is_enabled FROM accounts ORDER BY id').all() as {
+        id: number;
+        label: string;
+        telegram_user_id: string;
+        status: string;
+        is_enabled: number;
+      }[]
+    ).map((r) => ({ ...r }));
     pre.close();
 
     augmentToProductionShape(dbPath);
@@ -160,6 +185,29 @@ describe('migration safety: production channel subsystem is preserved', () => {
       .all() as { id: number; telegram_channel_id: string; status: string }[];
     expect(channelRows.length).toBe(8);
 
+    // Account preservation: exactly the intended 2 monitoring accounts survive.
+    const accountRows = db
+      .prepare('SELECT id, label, telegram_user_id, status, is_enabled FROM accounts ORDER BY id')
+      .all() as { id: number; label: string; telegram_user_id: string; status: string; is_enabled: number }[];
+    expect(accountRows.length).toBe(2);
+    expect(accountRows.map((a) => a.id)).toEqual(preAccounts.map((a) => a.id));
+    for (const a of accountRows) {
+      const before = preAccounts.find((p) => p.id === a.id);
+      expect(before, `account ${a.id} must have existed before migration`).toBeTruthy();
+      if (before === undefined) continue;
+      expect(a.label).toBe(before.label);
+      expect(a.telegram_user_id).toBe(before.telegram_user_id);
+      expect(a.status).toBe(before.status);
+      expect(a.is_enabled).toBe(before.is_enabled);
+    }
+    // Sessions are NOT stored in SQLite: only a reference session_key column, no secret blob.
+    const sessionCols = db
+      .prepare("PRAGMA table_info('accounts')")
+      .all() as { name: string; type: string }[];
+    const sessionRelated = sessionCols.filter((c) => /session/i.test(c.name));
+    expect(sessionRelated.every((c) => c.name === 'session_key' && c.type === 'TEXT')).toBe(true);
+    expect(sessionRelated.some((c) => /blob/i.test(c.type))).toBe(false);
+
     const tgIds = new Set(channelRows.map((r) => r.telegram_channel_id));
     for (const id of preChannelIds) {
       expect(tgIds.has(id), `pre-existing channel ${id} must survive`).toBe(true);
@@ -174,13 +222,16 @@ describe('migration safety: production channel subsystem is preserved', () => {
     const assignRows = db
       .prepare('SELECT account_id, channel_id, status FROM account_channels')
       .all() as { account_id: number; channel_id: number; status: string }[];
-    expect(assignRows.length).toBe(17);
+    expect(assignRows.length).toBe(16);
 
     const idByTg = new Map(channelRows.map((r) => [r.telegram_channel_id, r.id]));
     const assignSet = new Set(assignRows.map((r) => `${r.account_id}:${r.channel_id}`));
     for (const pair of preAssignPairs) {
       expect(assignSet.has(pair), `pre-existing assignment ${pair} must survive`).toBe(true);
     }
+    // The intended production setup has exactly 2 accounts (no accidental 3rd).
+    expect(assignSet.has('1:1')).toBe(true);
+    expect(assignSet.has('2:1')).toBe(true);
     for (const tgId of NEW_CHANNEL_TG_IDS) {
       const channelId = idByTg.get(tgId);
       expect(assignSet.has(`1:${channelId}`), `assignment account 1 / ${tgId} must survive`).toBe(true);

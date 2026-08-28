@@ -560,13 +560,32 @@ export async function resolveBroadcastChannel(
   client: TelegramClient,
   identifier: string,
 ): Promise<Api.Channel> {
-  let entity: unknown;
-  let initialError: unknown;
+  // Try the identifier as supplied, plus the canonical -100 supergroup/channel
+  // form, so channels stored/identified by a bare positive numeric ID (common
+  // for production channels that have no @username) resolve as reliably as those
+  // identified by @username.
+  const attempts: string[] = [identifier];
+  if (/^\d+$/.test(identifier)) {
+    attempts.push(`-100${identifier}`);
+  } else if (identifier.startsWith('-100') && /^\d+$/.test(identifier.slice(4))) {
+    attempts.push(identifier.slice(4));
+  }
 
-  try {
-    entity = await client.getEntity(identifier);
-  } catch (error) {
-    initialError = error;
+  let entity: unknown;
+  let lastError: unknown;
+  for (const candidate of attempts) {
+    try {
+      const resolved = await client.getEntity(candidate);
+      if (resolved instanceof Api.Channel) {
+        entity = resolved;
+        break;
+      }
+      if (lastError === undefined) {
+        lastError = new Error(`Resolved Telegram entity is not a channel: ${candidate}`);
+      }
+    } catch (error) {
+      lastError = error;
+    }
   }
 
   if (!(entity instanceof Api.Channel) && /^-?\d+$/.test(identifier)) {
@@ -582,12 +601,15 @@ export async function resolveBroadcastChannel(
   }
 
   if (!(entity instanceof Api.Channel)) {
-    if (initialError instanceof Error) throw initialError;
-    if (initialError !== undefined) throw new Error(errorReason(initialError));
+    if (lastError instanceof Error) throw lastError;
+    if (lastError !== undefined) throw new Error(errorReason(lastError));
     throw new Error('Resolved Telegram entity is not a channel');
   }
-  if (entity.broadcast !== true || entity.megagroup === true) {
-    throw new Error('Resolved Telegram entity is not a broadcast channel');
+  // Monitor both broadcast channels and supergroups (megagroups). The native
+  // update pipeline delivers their posts as UpdateNewChannelMessage, so they
+  // must not be rejected at resolution time.
+  if (entity.broadcast !== true && entity.megagroup !== true) {
+    throw new Error('Resolved Telegram entity is not a monitorable channel');
   }
   return entity;
 }

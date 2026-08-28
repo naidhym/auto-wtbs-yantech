@@ -227,7 +227,7 @@ export class TelegramUpdateEngine {
     }
 
     const mapped = await mapGramJsEvent(newEngineEvent(update.message, update), state.entity);
-    if (mapped.chatKind !== 'channel_post') return;
+    if (mapped.chatKind !== 'channel_post' && mapped.chatKind !== 'supergroup') return;
 
     state.sync = this.syncStates.markHealthy(state.accountId, state.channel.id, update.pts);
     await Promise.allSettled([...state.listeners.values()].map(async (listener) => listener.onLivePost(mapped)));

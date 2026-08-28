@@ -255,7 +255,7 @@ describe('GramJS client lifecycle foundation', () => {
 
     const megagroup = new Api.Channel({
       id: bigInt('555000222'),
-      title: 'Not Broadcast',
+      title: 'Supergroup',
       photo: new Api.ChatPhotoEmpty(),
       date: 0,
       megagroup: true,
@@ -263,8 +263,14 @@ describe('GramJS client lifecycle foundation', () => {
     const megagroupClient = {
       getEntity: () => Promise.resolve(megagroup),
     } as unknown as TelegramClient;
-    await expect(resolveBroadcastChannel(megagroupClient, '@notbroadcast'))
-      .rejects.toThrow(/broadcast channel/i);
+    await expect(resolveBroadcastChannel(megagroupClient, '@supergroup'))
+      .resolves.toBe(megagroup);
+
+    const notChannelClient = {
+      getEntity: () => Promise.resolve({}),
+    } as unknown as TelegramClient;
+    await expect(resolveBroadcastChannel(notChannelClient, '@thing'))
+      .rejects.toThrow(/not a channel/i);
   });
 
   it('builds direct links to public and private reply/comment messages', () => {
