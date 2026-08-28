@@ -390,12 +390,7 @@ export class TelegramUpdateEngine {
           : 'unknown';
 
       let dropReason: string;
-      if (updateClass === 'UpdateNewMessage') {
-        // Production liveBuilder only subscribes to UpdateNewChannelMessage /
-        // UpdateChannelTooLong, so a post delivered as UpdateNewMessage never
-        // reaches handleRawUpdate at all (dropped at the event-builder filter).
-        dropReason = 'production_liveBuilder_only_subscribes_UpdateNewChannelMessage';
-      } else if (!registered) {
+      if (!registered) {
         dropReason = 'registry_miss';
       } else if (state === undefined || state.sync.syncStatus !== 'healthy') {
         dropReason = 'sync_recovery_then_reevaluate';
