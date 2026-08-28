@@ -35,6 +35,24 @@ export interface TelegramEngineChannelStatus {
   readonly lastError?: string;
 }
 
+// TEMPORARY ROOT-CAUSE DIAGNOSTIC payload — observability only.
+interface NativeUpdateDiagnostic {
+  readonly updateClass: string;
+  readonly peerClass: string;
+  readonly extractedChannelId?: string | undefined;
+  readonly extractedUserId?: string | undefined;
+  readonly messageId?: number | undefined;
+  readonly broadcast: boolean | string;
+  readonly megagroup: boolean | string;
+  readonly out: boolean | string;
+  readonly post: boolean | string;
+  readonly registered: boolean;
+  readonly matchedChannelId?: number | undefined;
+  readonly registeredChannels: readonly string[];
+  readonly classification: string;
+  readonly dropReason: string;
+}
+
 export interface TelegramEngineStatus {
   readonly accountKey: string;
   readonly connected: boolean;
@@ -55,8 +73,23 @@ interface EngineChannelState {
 
 export class TelegramUpdateEngine {
   private readonly channels = new Map<string, EngineChannelState>();
-  private readonly liveBuilder = new Raw({ types: [Api.UpdateNewChannelMessage, Api.UpdateChannelTooLong] });
+  private readonly liveBuilder = new Raw({
+    types: [Api.UpdateNewChannelMessage, Api.UpdateNewMessage, Api.UpdateChannelTooLong],
+  });
   private liveHandlerRegistered = false;
+
+  // ===========================================================================
+  // TEMPORARY ROOT-CAUSE DIAGNOSTIC — see task brief.
+  // This is OBSERVABILITY ONLY. It does NOT change the update pipeline or any
+  // filtering/classification. It registers a SECOND, broader Raw handler on the
+  // same client so we can see EVERY relevant native Telegram update BEFORE the
+  // production liveBuilder narrows them down. Remove this block (field +
+  // ensureDiagnosticHandler + logNativeUpdate + extractNativeUpdateDiagnostics)
+  // once the production trace is collected.
+  // Never logs: message text/body, session, API credentials, bot token, login
+  // code, or access hash.
+  // ===========================================================================
+  private diagnosticHandlerRegistered = false;
 
   public constructor(
     private readonly accountKey: string,
@@ -133,6 +166,26 @@ export class TelegramUpdateEngine {
       void this.handleRawUpdate(update);
     }, this.liveBuilder);
     this.liveHandlerRegistered = true;
+    this.ensureDiagnosticHandler();
+  }
+
+  // TEMPORARY ROOT-CAUSE DIAGNOSTIC — see banner above the diagnostic field.
+  private ensureDiagnosticHandler(): void {
+    if (this.diagnosticHandlerRegistered) return;
+    this.diagnosticHandlerRegistered = true;
+
+    const diagBuilder = new Raw({
+      types: [
+        Api.UpdateNewChannelMessage,
+        Api.UpdateNewMessage,
+        Api.UpdateChannelTooLong,
+        Api.Updates,
+        Api.UpdatesCombined,
+      ],
+    });
+    this.client.addEventHandler((update: unknown) => {
+      void this.logNativeUpdate(update);
+    }, diagBuilder);
   }
 
   private async synchronize(state: EngineChannelState, reason: 'startup' | 'reconnect' | 'gap'): Promise<void> {
@@ -198,8 +251,15 @@ export class TelegramUpdateEngine {
       await this.synchronize(state, 'gap');
       return;
     }
+    // Native posts arrive as UpdateNewChannelMessage for broadcast channels and
+    // as UpdateNewMessage for megagroups/supergroups. Accept both so supergroup
+    // monitoring is not filtered out before classification.
+    if (
+      !(update instanceof Api.UpdateNewChannelMessage) &&
+      !(update instanceof Api.UpdateNewMessage)
+    ) return;
+    if (!(update.message instanceof Api.Message)) return;
 
-    if (!(update instanceof Api.UpdateNewChannelMessage) || !(update.message instanceof Api.Message)) return;
     if (!(update.message.peerId instanceof Api.PeerChannel)) return;
 
     const lookupKey = canonicalTelegramChannelId(update.message.peerId.channelId);
@@ -232,9 +292,154 @@ export class TelegramUpdateEngine {
     state.sync = this.syncStates.markHealthy(state.accountId, state.channel.id, update.pts);
     await Promise.allSettled([...state.listeners.values()].map(async (listener) => listener.onLivePost(mapped)));
   }
+
+  // ===========================================================================
+  // TEMPORARY ROOT-CAUSE DIAGNOSTIC — OBSERVABILITY ONLY, no behaviour change.
+  // Logs every relevant native update BEFORE the production filter acts on it.
+  // ===========================================================================
+  private logNativeUpdate(update: unknown): void {
+    try {
+      const diag = this.extractNativeUpdateDiagnostics(update);
+      if (diag === undefined) return;
+      this.logger.info(
+        {
+          account: this.accountKey,
+          action: 'diag_native_update',
+          status: 'received',
+          updateClass: diag.updateClass,
+          peerClass: diag.peerClass,
+          extractedChannelId: diag.extractedChannelId,
+          extractedUserId: diag.extractedUserId,
+          messageId: diag.messageId,
+          broadcast: diag.broadcast,
+          megagroup: diag.megagroup,
+          out: diag.out,
+          post: diag.post,
+          registered: diag.registered,
+          matchedChannelId: diag.matchedChannelId,
+          registeredChannels: diag.registeredChannels,
+          classification: diag.classification,
+          dropReason: diag.dropReason,
+        },
+        '[TEMP-DIAG] native telegram update received',
+      );
+    } catch {
+      // Diagnostics must never break the real pipeline.
+    }
+  }
+
+  private extractNativeUpdateDiagnostics(update: unknown): NativeUpdateDiagnostic | undefined {
+    if (update instanceof Api.UpdateChannelTooLong) {
+      const extractedChannelId = canonicalTelegramChannelId(update.channelId);
+      const state = this.channels.get(extractedChannelId);
+      const registered = state !== undefined;
+      return {
+        updateClass: 'UpdateChannelTooLong',
+        peerClass: 'PeerChannel',
+        extractedChannelId,
+        extractedUserId: undefined,
+        messageId: undefined,
+        broadcast: 'n/a',
+        megagroup: 'n/a',
+        out: 'n/a',
+        post: 'n/a',
+        registered,
+        matchedChannelId: state?.channel.id,
+        registeredChannels: this.registeredChannelKeys(),
+        classification: 'n/a',
+        dropReason: registered ? 'gap_recovery_triggered' : 'registry_miss',
+      };
+    }
+
+    if (update instanceof Api.UpdateNewChannelMessage || update instanceof Api.UpdateNewMessage) {
+      const message = update.message;
+      if (!(message instanceof Api.Message)) return undefined;
+
+      const peer = message.peerId;
+      let extractedChannelId: string | undefined;
+      let extractedUserId: string | undefined;
+      let peerClass = 'unknown';
+      if (peer instanceof Api.PeerChannel) {
+        extractedChannelId = canonicalTelegramChannelId(peer.channelId);
+        peerClass = 'PeerChannel';
+      } else if (peer instanceof Api.PeerUser) {
+        extractedUserId = String(peer.userId);
+        peerClass = 'PeerUser';
+      } else if (peer instanceof Api.PeerChat) {
+        peerClass = 'PeerChat';
+      }
+
+      // Only channel-relevant posts are worth logging; skip private/user chats.
+      if (extractedChannelId === undefined) return undefined;
+
+      let broadcast: boolean | string = 'n/a';
+      let megagroup: boolean | string = 'n/a';
+      const chat = message.chat;
+      if (chat instanceof Api.Channel) {
+        broadcast = chat.broadcast ?? 'n/a';
+        megagroup = chat.megagroup ?? 'n/a';
+      }
+
+      const updateClass = update instanceof Api.UpdateNewChannelMessage ? 'UpdateNewChannelMessage' : 'UpdateNewMessage';
+      const state = this.channels.get(extractedChannelId);
+      const registered = state !== undefined;
+      const classification = updateClass === 'UpdateNewChannelMessage'
+        ? 'channel_post'
+        : peerClass === 'PeerChannel'
+          ? 'supergroup'
+          : 'unknown';
+
+      let dropReason: string;
+      if (updateClass === 'UpdateNewMessage') {
+        // Production liveBuilder only subscribes to UpdateNewChannelMessage /
+        // UpdateChannelTooLong, so a post delivered as UpdateNewMessage never
+        // reaches handleRawUpdate at all (dropped at the event-builder filter).
+        dropReason = 'production_liveBuilder_only_subscribes_UpdateNewChannelMessage';
+      } else if (!registered) {
+        dropReason = 'registry_miss';
+      } else if (state === undefined || state.sync.syncStatus !== 'healthy') {
+        dropReason = 'sync_recovery_then_reevaluate';
+      } else {
+        dropReason = 'would_emit_if_chatKind_channel_post_or_supergroup';
+      }
+
+      return {
+        updateClass,
+        peerClass,
+        extractedChannelId,
+        extractedUserId,
+        messageId: message.id,
+        broadcast,
+        megagroup,
+        out: message.out ?? 'n/a',
+        post: message.post ?? 'n/a',
+        registered,
+        matchedChannelId: state?.channel.id,
+        registeredChannels: this.registeredChannelKeys(),
+        classification,
+        dropReason,
+      };
+    }
+
+    if (update instanceof Api.Updates || update instanceof Api.UpdatesCombined) {
+      const inner = (update as { updates?: unknown[] }).updates;
+      if (Array.isArray(inner)) {
+        for (const sub of inner) {
+          void this.logNativeUpdate(sub);
+        }
+      }
+      return undefined;
+    }
+
+    return undefined;
+  }
+
+  private registeredChannelKeys(): readonly string[] {
+    return Array.from(this.channels.keys());
+  }
 }
 
-function newEngineEvent(message: Api.Message, update: Api.UpdateNewChannelMessage): NewMessageLikeEvent {
+function newEngineEvent(message: Api.Message, update: Api.UpdateNewChannelMessage | Api.UpdateNewMessage): NewMessageLikeEvent {
   return {
     message,
     originalUpdate: update,

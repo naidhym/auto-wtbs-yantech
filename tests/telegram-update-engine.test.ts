@@ -1109,4 +1109,265 @@ describe('telegram update engine', () => {
     expect(engine.getStatus().syncedChannels).toBe(2);
     logger.close();
   });
+
+  // --- Regression: megagroup live-update ingestion fix (UpdateNewMessage) ---
+
+  function createUpdateMessage(message: Api.Message, pts: number): Api.UpdateNewMessage {
+    return new Api.UpdateNewMessage({ message, pts, ptsCount: 1 });
+  }
+
+  it('control: broadcast channel 3980589729 still delivered via UpdateNewChannelMessage', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-engine-ctrl-broadcast-'));
+    const logger = createLogger({ level: 'error', logDirectory: path.join(root, 'logs'), environment: 'test', writeToStdout: false });
+    const repository = createSyncRepository(root, [['3980589729', 'tes']]);
+    const entity = createChannel('3980589729', 'tes');
+    const handlers: Array<(update: unknown) => void> = [];
+    const invoke = vi.fn().mockImplementation((request: unknown) => {
+      if (request instanceof Api.updates.GetChannelDifference) {
+        return Promise.resolve(new Api.updates.ChannelDifferenceEmpty({ pts: request.pts + 1 }));
+      }
+      throw new Error('unexpected');
+    });
+    const engine = new TelegramUpdateEngine('account-1', {
+      connected: true,
+      getEntity: () => Promise.resolve(entity),
+      addEventHandler(cb: (update: unknown) => void) { handlers.push(cb); },
+      invoke,
+    } as unknown as TelegramClient, repository, logger.logger);
+
+    const received: Array<{ id: string; msg: number; kind: string }> = [];
+    await engine.subscribe({
+      assignmentId: 1,
+      accountId: 1,
+      accountKey: 'account-1',
+      channel: { id: 1, telegramChannelId: '3980589729', title: 'tes', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
+      identifier: '3980589729',
+      onLivePost: (event) => { received.push({ id: event.telegramChannelId ?? '', msg: event.sourceMessageId ?? 0, kind: event.chatKind }); return Promise.resolve(); },
+      onError: () => Promise.resolve(),
+    });
+
+    handlers[0]?.(new Api.UpdateNewChannelMessage({ message: createMessage('3980589729', 1, 'post'), pts: 10, ptsCount: 1 }));
+    await flushEngine();
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({ id: '3980589729', msg: 1, kind: 'channel_post' });
+    logger.close();
+  });
+
+  it('megagroup 1611324665 delivered via Api.UpdateNewMessage reaches onLivePost as supergroup', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-engine-megagroup-newmessage-'));
+    const logger = createLogger({ level: 'error', logDirectory: path.join(root, 'logs'), environment: 'test', writeToStdout: false });
+    const repository = createSyncRepository(root, [['1611324665', 'failing-channel']]);
+    const entity = new Api.Channel({
+      id: bigInt('1611324665'),
+      accessHash: bigInt('91611324665'),
+      title: 'failing-channel',
+      photo: new Api.ChatPhotoEmpty(),
+      date: 0,
+      megagroup: true,
+    });
+    const handlers: Array<(update: unknown) => void> = [];
+    const invoke = vi.fn().mockImplementation((request: unknown) => {
+      if (request instanceof Api.updates.GetChannelDifference) {
+        return Promise.resolve(new Api.updates.ChannelDifferenceEmpty({ pts: request.pts + 1 }));
+      }
+      throw new Error('unexpected');
+    });
+    const engine = new TelegramUpdateEngine('account-1', {
+      connected: true,
+      getEntity: () => Promise.resolve(entity),
+      addEventHandler(cb: (update: unknown) => void) { handlers.push(cb); },
+      invoke,
+    } as unknown as TelegramClient, repository, logger.logger);
+
+    const received: Array<{ id: string; msg: number; kind: string }> = [];
+    await engine.subscribe({
+      assignmentId: 1,
+      accountId: 1,
+      accountKey: 'account-1',
+      channel: { id: 1, telegramChannelId: '1611324665', title: 'failing-channel', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
+      identifier: '1611324665',
+      onLivePost: (event) => { received.push({ id: event.telegramChannelId ?? '', msg: event.sourceMessageId ?? 0, kind: event.chatKind }); return Promise.resolve(); },
+      onError: () => Promise.resolve(),
+    });
+
+    const message = new Api.Message({
+      out: false, mentioned: false, mediaUnread: false, silent: false,
+      post: false, id: 7,
+      peerId: new Api.PeerChannel({ channelId: bigInt('1611324665') }),
+      message: 'wtb post', date: 0,
+    });
+    handlers[0]?.(createUpdateMessage(message, 12));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({ id: '1611324665', msg: 7, kind: 'supergroup' });
+    logger.close();
+  });
+
+  it('two subscribed channels do not cross-match when one receives an UpdateNewMessage', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-engine-nocrossmatch-'));
+    const logger = createLogger({ level: 'error', logDirectory: path.join(root, 'logs'), environment: 'test', writeToStdout: false });
+    const channels = [['7200000001', 'alpha'], ['7200000002', 'beta']] as const;
+    const repository = createSyncRepository(root, channels);
+    const handlers: Array<(update: unknown) => void> = [];
+    // Real WTB channels are megagroups (supergroups); model them accordingly.
+    const entities = new Map<string, Api.Channel>(
+      channels.map(([id, title]) => [
+        id,
+        new Api.Channel({
+          id: bigInt(id),
+          accessHash: bigInt(`9${id}`),
+          title,
+          photo: new Api.ChatPhotoEmpty(),
+          date: 0,
+          megagroup: true,
+        }),
+      ]),
+    );
+    const invoke = vi.fn().mockImplementation((request: unknown) => {
+      if (request instanceof Api.updates.GetChannelDifference) {
+        return Promise.resolve(new Api.updates.ChannelDifferenceEmpty({ pts: request.pts + 1 }));
+      }
+      throw new Error('unexpected');
+    });
+    const engine = new TelegramUpdateEngine('account-1', createClient(entities, invoke, handlers), repository, logger.logger);
+
+    const received: Array<{ channel: string; id: number }> = [];
+    for (const [index, [id, title]] of channels.entries()) {
+      await engine.subscribe({
+        assignmentId: index + 1,
+        accountId: 1,
+        accountKey: 'account-1',
+        channel: { id: index + 1, telegramChannelId: id, title, enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
+        identifier: id,
+        onLivePost: (event) => { received.push({ channel: event.telegramChannelId ?? '', id: event.sourceMessageId ?? 0 }); return Promise.resolve(); },
+        onError: () => Promise.resolve(),
+      });
+    }
+
+    // Only alpha gets a (megagroup) UpdateNewMessage.
+    const message = new Api.Message({
+      out: false, mentioned: false, mediaUnread: false, silent: false,
+      post: false, id: 9,
+      peerId: new Api.PeerChannel({ channelId: bigInt('7200000001') }),
+      message: 'alpha only', date: 0,
+    });
+    handlers[0]?.(createUpdateMessage(message, 20));
+    await flushEngine();
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toEqual({ channel: '7200000001', id: 9 });
+    expect(engine.getStatus().syncedChannels).toBe(2);
+    logger.close();
+  });
+
+  it('two accounts receive their own UpdateNewMessage independently without cross-account emission', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-engine-account-indep-newmessage-'));
+    const logger = createLogger({ level: 'error', logDirectory: path.join(root, 'logs'), environment: 'test', writeToStdout: false });
+    const sharedChannelId = '7300000001';
+    const entity = new Api.Channel({
+      id: bigInt(sharedChannelId),
+      accessHash: bigInt('97300000001'),
+      title: 'shared',
+      photo: new Api.ChatPhotoEmpty(),
+      date: 0,
+      megagroup: true,
+    });
+    const repo1 = createSyncRepository(path.join(root, 'account-1'), [[sharedChannelId, 'shared']]);
+    const repo2 = createSyncRepository(path.join(root, 'account-2'), [[sharedChannelId, 'shared']]);
+    const handlers1: Array<(update: unknown) => void> = [];
+    const handlers2: Array<(update: unknown) => void> = [];
+    const engine1 = new TelegramUpdateEngine('account-1', {
+      connected: true,
+      getEntity: () => Promise.resolve(entity),
+      addEventHandler(cb: (update: unknown) => void) { handlers1.push(cb); },
+      invoke: vi.fn().mockResolvedValue(new Api.updates.ChannelDifferenceEmpty({ pts: 50 })),
+    } as unknown as TelegramClient, repo1, logger.logger);
+    const engine2 = new TelegramUpdateEngine('account-2', {
+      connected: true,
+      getEntity: () => Promise.resolve(entity),
+      addEventHandler(cb: (update: unknown) => void) { handlers2.push(cb); },
+      invoke: vi.fn().mockResolvedValue(new Api.updates.ChannelDifferenceEmpty({ pts: 50 })),
+    } as unknown as TelegramClient, repo2, logger.logger);
+
+    const received1: number[] = [];
+    const received2: number[] = [];
+    await engine1.subscribe({
+      assignmentId: 1, accountId: 1, accountKey: 'account-1',
+      channel: { id: 1, telegramChannelId: sharedChannelId, title: 'shared', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
+      identifier: sharedChannelId,
+      onLivePost: (event) => { received1.push(event.sourceMessageId ?? 0); return Promise.resolve(); },
+      onError: () => Promise.resolve(),
+    });
+    await engine2.subscribe({
+      assignmentId: 2, accountId: 2, accountKey: 'account-2',
+      channel: { id: 1, telegramChannelId: sharedChannelId, title: 'shared', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
+      identifier: sharedChannelId,
+      onLivePost: (event) => { received2.push(event.sourceMessageId ?? 0); return Promise.resolve(); },
+      onError: () => Promise.resolve(),
+    });
+
+    const message = new Api.Message({
+      out: false, mentioned: false, mediaUnread: false, silent: false,
+      post: false, id: 31,
+      peerId: new Api.PeerChannel({ channelId: bigInt(sharedChannelId) }),
+      message: 'shared post', date: 0,
+    });
+    handlers1[0]?.(createUpdateMessage(message, 51));
+    handlers2[0]?.(createUpdateMessage(message, 51));
+    await flushEngine();
+
+    expect(received1).toEqual([31]);
+    expect(received2).toEqual([31]);
+    logger.close();
+  });
+
+  it('a single UpdateNewMessage produces exactly one onLivePost (no duplicate)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-engine-nodup-newmessage-'));
+    const logger = createLogger({ level: 'error', logDirectory: path.join(root, 'logs'), environment: 'test', writeToStdout: false });
+    const repository = createSyncRepository(root, [['7400000001', 'sg']]);
+    const entity = new Api.Channel({
+      id: bigInt('7400000001'),
+      accessHash: bigInt('97400000001'),
+      title: 'sg',
+      photo: new Api.ChatPhotoEmpty(),
+      date: 0,
+      megagroup: true,
+    });
+    const handlers: Array<(update: unknown) => void> = [];
+    const invoke = vi.fn().mockImplementation((request: unknown) => {
+      if (request instanceof Api.updates.GetChannelDifference) {
+        return Promise.resolve(new Api.updates.ChannelDifferenceEmpty({ pts: request.pts + 1 }));
+      }
+      throw new Error('unexpected');
+    });
+    const engine = new TelegramUpdateEngine('account-1', {
+      connected: true,
+      getEntity: () => Promise.resolve(entity),
+      addEventHandler(cb: (update: unknown) => void) { handlers.push(cb); },
+      invoke,
+    } as unknown as TelegramClient, repository, logger.logger);
+
+    const liveCount: number[] = [];
+    await engine.subscribe({
+      assignmentId: 1, accountId: 1, accountKey: 'account-1',
+      channel: { id: 1, telegramChannelId: '7400000001', title: 'sg', enabled: true, status: 'pending', createdAt: '', updatedAt: '' },
+      identifier: '7400000001',
+      onLivePost: (event) => { liveCount.push(event.sourceMessageId ?? 0); return Promise.resolve(); },
+      onError: () => Promise.resolve(),
+    });
+
+    const message = new Api.Message({
+      out: false, mentioned: false, mediaUnread: false, silent: false,
+      post: false, id: 5,
+      peerId: new Api.PeerChannel({ channelId: bigInt('7400000001') }),
+      message: 'once', date: 0,
+    });
+    handlers[0]?.(createUpdateMessage(message, 8));
+    await flushEngine();
+
+    expect(liveCount).toEqual([5]);
+    logger.close();
+  });
 });
