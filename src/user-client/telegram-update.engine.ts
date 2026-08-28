@@ -281,9 +281,15 @@ export class TelegramUpdateEngine {
       return;
     }
 
+    // A live, classifiable post that reaches this handler for a registered
+    // channel is itself proof the account can receive it. Re-attempt the
+    // background diff-sync (to keep pts state current) but do NOT discard the
+    // live post when that sync is unhealthy. This is the exact failure mode that
+    // affects private WTB megagroups (whose initial GetChannelDifference can fail
+    // while the account is still a valid participant) but NOT the public test
+    // channel, whose sync is healthy from the start.
     if (state.sync.syncStatus !== 'healthy') {
       await this.synchronize(state, 'gap');
-      if (mapHealth(state.sync.syncStatus) !== 'HEALTHY') return;
     }
 
     const mapped = await mapGramJsEvent(newEngineEvent(update.message, update), state.entity);
